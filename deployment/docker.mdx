@@ -1,0 +1,268 @@
+---
+title: Docker Deployment
+description: Deploy QIMEM Platform using Docker and Docker Compose
+---
+
+## Overview
+
+QIMEM provides official Docker images and Docker Compose configurations for both the encryption service (`qimem-api`) and the unified platform server (`qauth-api`).
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone and prepare environment">
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+
+  <Step title="Start with Docker Compose">
+    ```bash
+    docker compose up --build
+    ```
+  </Step>
+
+  <Step title="Verify health">
+    ```bash
+    curl -fsS http://localhost:8080/health
+    ```
+  </Step>
+</Steps>
+
+## Docker Compose Configuration
+
+### Services
+
+The `docker-compose.yml` defines three services:
+
+#### PostgreSQL Database
+
+```yaml
+postgres:
+  image: postgres:16
+  environment:
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: qimem
+  ports:
+    - "5432:5432"
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+```
+
+<Note>
+The PostgreSQL service is required when running QIMEM in **stateful mode**. The health check ensures the database is ready before dependent services start.
+</Note>
+
+#### QIMEM API Service
+
+```yaml
+qimem-api:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    QIMEM_MODE: stateful
+    DATABASE_URL: postgres://postgres:postgres@postgres:5432/qimem?sslmode=disable
+    QIMEM_BIND: 0.0.0.0:8080
+    RUST_LOG: info
+  ports:
+    - "8080:8080"
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+    interval: 10s
+    timeout: 3s
+    retries: 10
+```
+
+## Port Mappings
+
+| Service | Container Port | Host Port | Purpose |
+|---------|---------------|-----------|----------|
+| `postgres` | 5432 | 5432 | PostgreSQL database |
+| `qimem-api` | 8080 | 8080 | QIMEM encryption API |
+| `qauth-api` | 8080 | 8080 | Unified platform API |
+
+## Health Checks
+
+### PostgreSQL Health Check
+
+```bash
+pg_isready -U postgres
+```
+
+- **Interval**: 5 seconds
+- **Timeout**: 5 seconds
+- **Retries**: 20 (100 seconds total)
+
+### QIMEM API Health Check
+
+```bash
+curl -fsS http://localhost:8080/health
+```
+
+- **Interval**: 10 seconds
+- **Timeout**: 3 seconds
+- **Retries**: 10 (100 seconds total)
+
+**Health response:**
+```json
+{
+  "status": "ok"
+}
+```
+
+## Volume Configuration
+
+<Warning>
+The default `docker-compose.yml` does **not** persist PostgreSQL data. For production use, add a volume mount:
+
+```yaml
+postgres:
+  volumes:
+    - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+```
+</Warning>
+
+## Dockerfile
+
+The multi-stage Dockerfile builds the `qimem-api` binary with the `stateful` feature:
+
+```dockerfile
+FROM rust:1.82-slim AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* ./
+COPY src ./src
+COPY migrations ./migrations
+RUN cargo build --release --bin qimem-api --features stateful && strip target/release/qimem-api
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -u 10001 qimem
+WORKDIR /app
+COPY --from=builder /app/target/release/qimem-api /usr/local/bin/qimem-api
+COPY migrations ./migrations
+USER qimem
+EXPOSE 8080
+CMD ["qimem-api"]
+```
+
+### Build Features
+
+- **Builder stage**: Uses `rust:1.82-slim` with `--features stateful`
+- **Runtime stage**: Uses `debian:bookworm-slim` with minimal dependencies
+- **Security**: Runs as non-root user `qimem` (UID 10001)
+- **Optimizations**: Binary is stripped to reduce image size
+- **Dependencies**: Includes `ca-certificates` and `curl` for health checks
+
+## Deployment Scenarios
+
+<CodeGroup>
+```bash Stateful Mode (PostgreSQL)
+docker compose up -d postgres qimem-api
+curl http://localhost:8080/health
+```
+
+```bash Stateless Mode (In-Memory)
+docker run -d \
+  -p 8080:8080 \
+  -e QIMEM_MODE=stateless \
+  -e QIMEM_BIND=0.0.0.0:8080 \
+  -e RUST_LOG=info \
+  qimem-api
+```
+
+```bash Custom Database URL
+docker run -d \
+  -p 8080:8080 \
+  -e QIMEM_MODE=stateful \
+  -e DATABASE_URL=postgres://user:pass@host:5432/qimem \
+  -e QIMEM_BIND=0.0.0.0:8080 \
+  qimem-api
+```
+</CodeGroup>
+
+## Running qauth-api vs qimem-api
+
+### qimem-api (Encryption Only)
+
+Provides key management and encryption operations:
+
+```bash
+docker compose up qimem-api
+```
+
+**Endpoints:**
+- `GET /health`
+- `POST /keys`
+- `POST /encrypt`
+- `POST /decrypt`
+- `POST /rotate`
+
+### qauth-api (Unified Platform)
+
+Provides encryption + authentication + plugin management:
+
+```bash
+cargo build --release --bin qauth-api
+docker run -d \
+  -p 8080:8080 \
+  -e QIMEM_MODE=stateful \
+  -e DATABASE_URL=postgres://user:pass@host:5432/qimem \
+  qauth-api
+```
+
+**Endpoints:**
+- `/v1/security/*` - Encryption operations
+- `/v1/auth/*` - Authentication (JWT, TOTP, RBAC)
+- `/v1/plugins/*` - Plugin registration
+- `/health` and `/v1/security/health` - Health checks
+
+<Note>
+The `qauth-api` binary is not included in the default Dockerfile. Build it separately or modify the Dockerfile to include it.
+</Note>
+
+## Troubleshooting
+
+### Service fails to start
+
+Check that PostgreSQL is healthy:
+
+```bash
+docker compose ps
+docker compose logs postgres
+```
+
+### Connection refused errors
+
+Verify the `DATABASE_URL` uses the service name:
+
+```bash
+# Correct (inside Docker network)
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/qimem
+
+# Incorrect (localhost won't work inside containers)
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/qimem
+```
+
+### Health check failures
+
+Increase health check timeouts:
+
+```yaml
+healthcheck:
+  interval: 15s
+  timeout: 5s
+  retries: 20
+```

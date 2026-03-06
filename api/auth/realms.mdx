@@ -1,0 +1,59 @@
+---
+title: 'Create Realm'
+api: 'POST /v1/auth/realms'
+description: 'Create a new authentication realm (tenant) in QAuth'
+---
+
+## Overview
+
+Realms provide multi-tenancy isolation in QAuth. Each realm maintains its own set of users, roles, and clients. This endpoint creates a new realm with a unique identifier and display name.
+
+## Request Body
+
+<ParamField body="id" type="string" required>
+  Unique realm identifier. Used as the primary key for realm lookups.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Human-readable display name for the realm.
+</ParamField>
+
+## Response
+
+Returns the created realm object:
+
+<ResponseField name="id" type="string">
+  The unique realm identifier.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  The display name of the realm.
+</ResponseField>
+
+## Example
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/realms \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "acme",
+    "name": "Acme Corporation"
+  }'
+```
+
+```json Response
+{
+  "id": "acme",
+  "name": "Acme Corporation"
+}
+```
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Human-readable error message when the request fails.
+</ResponseField>
+
+Common errors:
+- **400 Bad Request**: Invalid request format or missing required fields
+- **500 Internal Server Error**: Realm creation failed due to internal error

@@ -1,0 +1,149 @@
+---
+title: 'Login (Get Token)'
+api: 'POST /v1/auth/token'
+description: 'Authenticate a user and receive access and refresh tokens'
+---
+
+## Overview
+
+Perform password-based authentication (OAuth2 password grant flow) to obtain JWT access and refresh tokens. This endpoint validates client credentials, user credentials, and optional MFA codes before issuing tokens.
+
+## Authentication Flow
+
+1. Client provides `client_id` and `client_secret` to prove application identity
+2. User provides `username` and `password` for authentication
+3. If MFA is enabled for the user, `totp_code` must be provided
+4. System validates all credentials and returns a token pair
+5. Access token is used for API requests (expires in 15 minutes)
+6. Refresh token is used to get new access tokens (expires in 24 hours)
+
+## Request Body
+
+<ParamField body="client_id" type="string" required>
+  The OAuth client identifier obtained from [Create Client](/api/auth/clients).
+</ParamField>
+
+<ParamField body="client_secret" type="string" required>
+  The OAuth client secret obtained from [Create Client](/api/auth/clients).
+</ParamField>
+
+<ParamField body="realm_id" type="string" required>
+  The realm identifier where the user exists.
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  The user's username.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The user's password.
+</ParamField>
+
+<ParamField body="totp_code" type="string" optional>
+  6-digit TOTP code from the user's authenticator app. **Required** if MFA is enabled for the user.
+</ParamField>
+
+## Response
+
+Returns a `TokenPair` object:
+
+<ResponseField name="access_token" type="string">
+  JWT access token for authenticating API requests. Include in `Authorization: Bearer <token>` header.
+</ResponseField>
+
+<ResponseField name="refresh_token" type="string">
+  JWT refresh token for obtaining new access tokens without re-authentication.
+</ResponseField>
+
+<ResponseField name="expires_in" type="integer">
+  Number of seconds until the access token expires (900 seconds = 15 minutes).
+</ResponseField>
+
+<ResponseField name="token_type" type="string">
+  Token type, always "Bearer".
+</ResponseField>
+
+## Token Claims
+
+The access token JWT contains these claims:
+- `sub` - User ID (UUID)
+- `realm` - Realm ID
+- `roles` - Array of role names assigned to the user
+- `permissions` - Array of all permissions from assigned roles
+- `jti` - Unique token ID (for revocation)
+- `token_use` - "access"
+- `exp` - Expiration timestamp (15 minutes from issuance)
+- `iat` - Issued at timestamp
+
+## Example
+
+### Basic Login
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/token \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "client_secret": "a1b2c3d4-e5f6-4a5b-8c7d-9e8f7a6b5c4d",
+    "realm_id": "acme",
+    "username": "alice",
+    "password": "secret"
+  }'
+```
+
+```json Response
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMzQ1In0.eyJzdWIiOiJiM2Y4YzlkMi0xYTJiLTRjNWQtOGU3Zi05YThiN2M2ZDVlNGYiLCJyZWFsbSI6ImFjbWUiLCJyb2xlcyI6WyJhZG1pbiJdLCJwZXJtaXNzaW9ucyI6WyJ1c2VyczpyZWFkIiwidXNlcnM6d3JpdGUiXSwianRpIjoiYWJjZGVmMTIzNDU2IiwidG9rZW5fdXNlIjoiYWNjZXNzIiwiZXhwIjoxNzQwMDAwOTAwLCJpYXQiOjE3NDAwMDAwMDB9.signature",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMzQ1In0.eyJzdWIiOiJiM2Y4YzlkMi0xYTJiLTRjNWQtOGU3Zi05YThiN2M2ZDVlNGYiLCJyZWFsbSI6ImFjbWUiLCJyb2xlcyI6WyJhZG1pbiJdLCJwZXJtaXNzaW9ucyI6WyJ1c2VyczpyZWFkIiwidXNlcnM6d3JpdGUiXSwianRpIjoiYWJjZGVmNjc4OTAxIiwidG9rZW5fdXNlIjoicmVmcmVzaCIsImV4cCI6MTc0MDA4NjQwMCwiaWF0IjoxNzQwMDAwMDAwfS5zaWduYXR1cmU",
+  "expires_in": 900,
+  "token_type": "Bearer"
+}
+```
+
+### Login with MFA
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/token \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "client_secret": "a1b2c3d4-e5f6-4a5b-8c7d-9e8f7a6b5c4d",
+    "realm_id": "acme",
+    "username": "bob",
+    "password": "secret",
+    "totp_code": "123456"
+  }'
+```
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Human-readable error message when authentication fails.
+</ResponseField>
+
+Common errors:
+- **400 Bad Request**: Invalid request format or missing required fields
+- **401 Unauthorized**: Invalid credentials (client, user, or MFA code)
+  - `"invalid client credentials"` - Wrong client_id, client_secret, or realm_id mismatch
+  - `"invalid credentials"` - Wrong username or password
+  - `"mfa required"` - User has MFA enabled but no totp_code provided
+  - `"invalid mfa code"` - TOTP code is incorrect or expired
+- **404 Not Found**: Client or user does not exist
+- **500 Internal Server Error**: Token issuance failed
+
+## Usage with API Requests
+
+After obtaining the access token, include it in subsequent API requests:
+
+```bash
+curl -X GET http://localhost:8080/v1/some-protected-endpoint \
+  -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIs...'
+```
+
+## Security Notes
+
+- Access tokens expire after 15 minutes (900 seconds)
+- Refresh tokens expire after 24 hours (86,400 seconds)
+- Tokens are signed using HS256 with rotating signing keys
+- Each token has a unique `jti` (JWT ID) for revocation tracking
+- Client credentials must match the realm to prevent cross-realm attacks

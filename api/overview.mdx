@@ -1,0 +1,133 @@
+---
+title: 'API Overview'
+description: 'Introduction to the QIMEM Platform REST API'
+---
+
+## Base URL
+
+The QIMEM Platform API is versioned and organized into three main categories:
+
+```
+https://api.qimem.io
+```
+
+All API endpoints use the `/v1` prefix for version 1:
+
+- `/v1/security/*` - Cryptographic operations and key management
+- `/v1/auth/*` - Authentication and authorization via QAuth
+- `/v1/plugins/*` - Plugin registry and manifest management
+
+## API Categories
+
+### Security API
+
+Provides cryptographic operations including encryption, decryption, and key lifecycle management.
+
+**Endpoints:**
+- `POST /v1/security/keys` - Create a new encryption key
+- `POST /v1/security/encrypt` - Encrypt data with a specified key
+- `POST /v1/security/decrypt` - Decrypt an envelope
+- `POST /v1/security/rotate` - Rotate an existing key to a new version
+- `GET /v1/security/health` - Health check for security services
+
+### Auth API
+
+Handles realm management, role-based access control (RBAC), client and user administration, and token lifecycle operations.
+
+**Endpoints:**
+- `POST /v1/auth/realms` - Create a new authentication realm
+- `POST /v1/auth/roles` - Create a role with permissions
+- `POST /v1/auth/clients` - Register an OAuth2 client
+- `POST /v1/auth/users` - Create a user with assigned roles
+- `POST /v1/auth/token` - Login and obtain access/refresh tokens
+- `POST /v1/auth/token/refresh` - Refresh an expired access token
+- `POST /v1/auth/token/revoke` - Revoke an access or refresh token
+- `POST /v1/auth/token/introspect` - Introspect token validity and claims
+- `POST /v1/auth/keys/rotate` - Rotate the JWT signing key
+
+### Plugins API
+
+Manages plugin manifests for extensibility via WebAssembly, Python, JavaScript, or Lua runtimes.
+
+**Endpoints:**
+- `GET /v1/plugins/manifests` - List all registered plugin manifests
+- `POST /v1/plugins/manifests` - Register a new plugin manifest
+
+## Health Endpoints
+
+The platform provides multiple health check endpoints for monitoring:
+
+- `GET /health` - General platform health
+- `GET /ready` - Readiness probe for orchestration
+- `GET /v1/security/health` - Security subsystem health
+
+All health endpoints return:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+or for readiness:
+
+```json
+{
+  "status": "ready"
+}
+```
+
+## Request Format
+
+All POST requests require:
+
+- `Content-Type: application/json` header
+- Valid JSON request body
+- Authorization header (for protected endpoints)
+
+### Example Request
+
+```bash
+curl -X POST https://api.qimem.io/v1/security/keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
+```
+
+## Response Format
+
+All API responses are returned as JSON with appropriate HTTP status codes:
+
+- `200 OK` - Successful operation
+- `400 Bad Request` - Validation error or invalid input
+- `404 Not Found` - Resource not found
+- `500 Internal Server Error` - Server-side error
+
+### Success Response Example
+
+```json
+{
+  "key_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### Error Response Example
+
+```json
+{
+  "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+See [Error Handling](/api/errors) for detailed information on error responses.
+
+## Rate Limiting
+
+API rate limits are enforced per client and depend on your subscription tier. Rate limit information is included in response headers:
+
+- `X-RateLimit-Limit` - Maximum requests per window
+- `X-RateLimit-Remaining` - Remaining requests in current window
+- `X-RateLimit-Reset` - Unix timestamp when the limit resets
+
+## Versioning
+
+The API uses URL-based versioning. The current version is `v1`. Breaking changes will result in a new version (e.g., `v2`), while backward-compatible changes are introduced within the existing version.

@@ -1,0 +1,86 @@
+---
+title: 'Create Client'
+api: 'POST /v1/auth/clients'
+description: 'Register a new OAuth client application in a realm'
+---
+
+## Overview
+
+Clients represent applications that can authenticate users within a realm. Each client receives a unique `client_id` and `client_secret` which must be provided during the login flow. This ensures only authorized applications can request tokens.
+
+## Request Body
+
+<ParamField body="realm_id" type="string" required>
+  The realm identifier where this client will be registered.
+</ParamField>
+
+<ParamField body="redirect_uris" type="array" required>
+  Array of allowed redirect URIs for OAuth flows. Used for security validation in authorization code flows.
+</ParamField>
+
+## Response
+
+Returns the created client with generated credentials:
+
+<ResponseField name="client_id" type="string">
+  Auto-generated UUID serving as the client identifier.
+</ResponseField>
+
+<ResponseField name="client_secret" type="string">
+  Auto-generated UUID serving as the client secret. Store this securely.
+</ResponseField>
+
+<ResponseField name="realm_id" type="string">
+  The realm this client belongs to.
+</ResponseField>
+
+<ResponseField name="redirect_uris" type="array">
+  Array of allowed redirect URIs.
+</ResponseField>
+
+## Example
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/clients \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "realm_id": "acme",
+    "redirect_uris": [
+      "https://app.acme.com/callback",
+      "http://localhost:3000/callback"
+    ]
+  }'
+```
+
+```json Response
+{
+  "client_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "client_secret": "a1b2c3d4-e5f6-4a5b-8c7d-9e8f7a6b5c4d",
+  "realm_id": "acme",
+  "redirect_uris": [
+    "https://app.acme.com/callback",
+    "http://localhost:3000/callback"
+  ]
+}
+```
+
+## Security Notes
+
+<Warning>
+  The `client_secret` is only returned once during creation. Store it securely in your application's configuration. If lost, you must create a new client.
+</Warning>
+
+- Use the `client_id` and `client_secret` in all token requests for this realm
+- Redirect URIs provide security validation for OAuth flows
+- Each client is scoped to a single realm
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Human-readable error message when the request fails.
+</ResponseField>
+
+Common errors:
+- **400 Bad Request**: Invalid request format or missing required fields
+- **404 Not Found**: Realm does not exist
+- **500 Internal Server Error**: Client creation failed due to internal error

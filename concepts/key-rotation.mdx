@@ -1,0 +1,379 @@
+---
+title: Key Rotation
+description: Version tracking, lineage management, and backward compatibility
+---
+
+## Overview
+
+Key rotation in QIMEM allows you to retire old encryption keys while maintaining the ability to decrypt existing data. This is critical for:
+
+- **Security Hygiene**: Limiting exposure from a compromised key
+- **Compliance**: Meeting regulatory requirements for periodic key rotation
+- **Zero-Downtime Migration**: Rotating keys without service interruption
+
+<Info>
+  Rotated keys remain available for decryption indefinitely. Only new encryptions use the active key.
+</Info>
+
+## Rotation Design
+
+**Source**: README.md (lines 32-36)
+
+> Rotation creates a new active key record and deactivates the old key. Old keys remain available for decrypt compatibility. Inactive keys are rejected for encryption.
+
+### Key States
+
+- **Active** (`active: true`): Can encrypt new data and decrypt existing data
+- **Inactive** (`active: false`): Can only decrypt data encrypted with this key
+
+### Rotation Flow
+
+1. **Mark Old Key Inactive**: The current active key is marked `active: false`
+2. **Generate New Key**: Fresh 256-bit key material is generated
+3. **Increment Version**: The new key has `version = old_version + 1`
+4. **Preserve Lineage**: Both keys share the same `lineage_id`
+
+## KeyMetadata Structure
+
+**Source**: src/keystore/mod.rs:18-29
+
+```rust
+pub struct KeyMetadata {
+    pub key_id: Uuid,
+    pub lineage_id: Uuid,
+    pub version: i32,
+    pub active: bool,
+}
+```
+
+### Field Descriptions
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `key_id` | `Uuid` | Unique identifier for this specific key version |
+| `lineage_id` | `Uuid` | Shared identifier for all versions in the rotation chain |
+| `version` | `i32` | Monotonically increasing version number (starts at 1) |
+| `active` | `bool` | Whether this key can encrypt new data |
+
+<Note>
+  When a key is first created, `key_id` and `lineage_id` are identical. Subsequent rotations generate new `key_id` values but preserve the `lineage_id`.
+</Note>
+
+## Rotation Implementation
+
+### In-Memory Store
+
+**Source**: src/keystore/memory.rs:60-88
+
+```rust
+fn rotate_key(&self, key_id: Uuid) -> Result<KeyMetadata> {
+    let mut keys = self.keys.write()
+        .map_err(|_| QimemError::Config("poisoned lock".to_string()))?;
+    
+    // 1. Mark old key inactive
+    let old = keys.get_mut(&key_id)
+        .ok_or(QimemError::KeyNotFound(key_id))?;
+    old.metadata.active = false;
+
+    // 2. Generate new key with incremented version
+    let new_id = Uuid::new_v4();
+    let metadata = KeyMetadata {
+        key_id: new_id,
+        lineage_id: old.metadata.lineage_id,
+        version: old.metadata.version + 1,
+        active: true,
+    };
+    
+    let new = StoredKey {
+        metadata: metadata.clone(),
+        material: generate_key_material().to_vec(),
+    };
+    
+    // 3. Insert new key
+    keys.insert(new_id, new);
+    
+    // 4. Update lineage pointer to latest key
+    self.lineages.write()
+        .map_err(|_| QimemError::Config("poisoned lock".to_string()))?.
+        insert(metadata.lineage_id, new_id);
+    
+    Ok(metadata)
+}
+```
+
+### PostgreSQL Store
+
+**Source**: src/keystore/postgres.rs:68-98
+
+The Postgres implementation uses transactions to ensure atomicity:
+
+```rust
+fn rotate_key(&self, key_id: Uuid) -> Result<KeyMetadata> {
+    let new_id = Uuid::new_v4();
+    let material = generate_key_material();
+    let rt = tokio::runtime::Handle::current();
+    
+    let metadata = rt.block_on(async {
+        let mut tx = self.pool.begin().await?;
+        
+        // 1. Fetch lineage and version from old key
+        let row = sqlx::query("SELECT lineage_id, version FROM keys WHERE key_id=$1")
+            .bind(key_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(QimemError::KeyNotFound(key_id))?;
+        let lineage_id: Uuid = row.try_get("lineage_id")?;
+        let version: i32 = row.try_get("version")?;
+        
+        // 2. Deactivate old key
+        sqlx::query("UPDATE keys SET active=false WHERE key_id=$1")
+            .bind(key_id)
+            .execute(&mut *tx)
+            .await?;
+        
+        // 3. Insert new active key
+        sqlx::query("INSERT INTO keys (key_id, lineage_id, version, active, material) VALUES ($1,$2,$3,$4,$5)")
+            .bind(new_id)
+            .bind(lineage_id)
+            .bind(version + 1)
+            .bind(true)
+            .bind(material.as_slice())
+            .execute(&mut *tx)
+            .await?;
+        
+        tx.commit().await?;
+        Ok::<KeyMetadata, QimemError>(KeyMetadata { 
+            key_id: new_id, 
+            lineage_id, 
+            version: version + 1, 
+            active: true 
+        })
+    })?;
+    
+    Ok(metadata)
+}
+```
+
+<Warning>
+  If the transaction fails, the rotation is rolled back, leaving the old key still active. Always check the returned `KeyMetadata` to confirm the new `key_id`.
+</Warning>
+
+## Version Tracking
+
+### Version Number Behavior
+
+- **Creation**: First key in lineage has `version: 1`
+- **Rotation**: Each rotation increments version by 1
+- **Monotonic**: Version numbers never decrease
+- **Lineage-Scoped**: Each lineage has independent version numbering
+
+### Example Timeline
+
+```
+Time 0: Create Key A
+  key_id: a1b2c3d4
+  lineage_id: a1b2c3d4  (same as key_id)
+  version: 1
+  active: true
+
+Time 1: Rotate Key A
+  Old Key:
+    key_id: a1b2c3d4
+    lineage_id: a1b2c3d4
+    version: 1
+    active: false  (changed)
+  
+  New Key:
+    key_id: e5f6g7h8
+    lineage_id: a1b2c3d4  (inherited)
+    version: 2  (incremented)
+    active: true
+
+Time 2: Rotate Key A Again
+  Key v1:
+    key_id: a1b2c3d4, version: 1, active: false
+  
+  Key v2:
+    key_id: e5f6g7h8, version: 2, active: false  (changed)
+  
+  Key v3:
+    key_id: i9j0k1l2
+    lineage_id: a1b2c3d4  (inherited)
+    version: 3  (incremented)
+    active: true
+```
+
+## Backward Compatibility
+
+The envelope format enables decryption with any historical key:
+
+### Envelope Self-Description
+
+**Source**: src/envelope.rs:11-24
+
+```rust
+pub struct Envelope {
+    pub key_id: Uuid,  // Identifies the specific key version
+    // ... other fields
+}
+```
+
+During decryption (src/platform_api.rs:154):
+
+```rust
+let envelope = Envelope::deserialize_binary(&bytes)?;
+let key = state.store.get_key(envelope.key_id)?;  // Fetch by key_id
+let plaintext = CryptoEngine::new(envelope.algorithm).decrypt(&key, &envelope)?;
+```
+
+### Multi-Version Decryption
+
+<Info>
+  The platform automatically uses the correct key for decryption by reading `key_id` from the envelope. No manual version management is required.
+</Info>
+
+**Example**:
+
+```rust
+// Encrypt with key v1
+let key_v1 = store.get_key(metadata_v1.key_id)?;
+let envelope_v1 = engine.encrypt(&key_v1, b"data1")?;
+
+// Rotate to key v2
+let metadata_v2 = store.rotate_key(metadata_v1.key_id)?;
+
+// Encrypt with key v2
+let key_v2 = store.get_key(metadata_v2.key_id)?;
+let envelope_v2 = engine.encrypt(&key_v2, b"data2")?;
+
+// Both envelopes can still be decrypted
+let plaintext1 = engine.decrypt(&key_v1, &envelope_v1)?;  // Uses v1
+let plaintext2 = engine.decrypt(&key_v2, &envelope_v2)?;  // Uses v2
+```
+
+### Inactive Key Rejection
+
+**Source**: src/crypto.rs:58-60
+
+Attempting to encrypt with an inactive key fails immediately:
+
+```rust
+if !key.active {
+    return Err(QimemError::KeyInactive(key.key_id));
+}
+```
+
+**Example**:
+
+```rust
+let key_v1 = store.get_key(metadata_v1.key_id)?;
+// After rotation, key_v1.active == false
+
+let result = engine.encrypt(&key_v1, b"new data");
+assert!(matches!(result, Err(QimemError::KeyInactive(_))));
+```
+
+## Lineage Management
+
+The `lineage_id` groups all versions of a key together:
+
+### Lineage Pointer Pattern
+
+Both key stores maintain a mapping from `lineage_id` to the current active `key_id`:
+
+**In-Memory** (src/keystore/memory.rs:19):
+```rust
+lineages: RwLock<HashMap<Uuid, Uuid>>
+```
+
+This allows efficient lookup of the active key in a lineage without scanning all keys.
+
+### Use Cases
+
+- **Key Discovery**: Find the current active key for a lineage
+- **Bulk Rotation**: Rotate all keys in a tenant or service
+- **Audit Trails**: Track key usage across versions
+
+<Note>
+  The `lineage_id` is immutable after key creation. All rotated versions inherit the original key's `lineage_id`.
+</Note>
+
+## HTTP API
+
+**Source**: src/platform_api.rs:52, 168-174
+
+### Rotate Key Endpoint
+
+```bash
+POST /v1/security/rotate
+Content-Type: application/json
+
+{
+  "key_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Response**:
+```json
+{
+  "key_id": "e5f6g7h8-i9j0-k1l2-m3n4-o5p6q7r8s9t0",
+  "lineage_id": "550e8400-e29b-41d4-a716-446655440000",
+  "version": 2,
+  "active": true
+}
+```
+
+### Implementation
+
+```rust
+async fn rotate_key(
+    State(state): State<PlatformState>,
+    Json(req): Json<RotateRequest>,
+) -> ApiResult<serde_json::Value> {
+    let key = state.store.rotate_key(req.key_id).map_err(map_err)?;
+    Ok(Json(serde_json::json!(key)))
+}
+```
+
+## Best Practices
+
+### Rotation Frequency
+
+- **High-Sensitivity Data**: Rotate every 30-90 days
+- **Standard Data**: Rotate every 1-2 years
+- **On Compromise**: Immediate rotation + re-encryption
+
+### Re-Encryption Strategy
+
+After rotation, consider re-encrypting old data:
+
+```rust
+// Decrypt with old key
+let plaintext = engine.decrypt(&key_v1, &old_envelope)?;
+
+// Re-encrypt with new key
+let new_envelope = engine.encrypt(&key_v2, &plaintext)?;
+```
+
+<Warning>
+  Re-encryption requires decrypting all data, which may impact performance for large datasets. Consider batch processing with rate limiting.
+</Warning>
+
+### Key Retirement
+
+Keys can be permanently deleted once:
+
+1. All data encrypted with that key has been re-encrypted
+2. Audit logs confirm no recent decryption requests
+3. Compliance retention periods have elapsed
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Encryption" href="/concepts/encryption" icon="lock">
+    Understand how active/inactive keys are enforced during encryption
+  </Card>
+  <Card title="Envelope Format" href="/concepts/envelope-format" icon="envelope">
+    Learn how key_id enables backward-compatible decryption
+  </Card>
+</CardGroup>

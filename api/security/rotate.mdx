@@ -1,0 +1,190 @@
+---
+title: 'Rotate Key'
+api: 'POST /v1/security/rotate'
+---
+
+Rotates an encryption key by creating a new active key version and deactivating the previous version. The old key remains available for decryption of existing envelopes.
+
+## Request
+
+<ParamField body="key_id" type="string (uuid)" required>
+  The unique identifier of the key to rotate. This should be the current active key in your key lineage.
+</ParamField>
+
+## Response
+
+<ResponseField name="key_id" type="string (uuid)" required>
+  The unique identifier for the newly created key version. Use this ID for all future encryption operations.
+</ResponseField>
+
+<ResponseField name="lineage_id" type="string (uuid)" required>
+  The lineage identifier shared by all versions in this key family. Use this to track which keys are related through rotation.
+</ResponseField>
+
+<ResponseField name="version" type="integer" required>
+  The version number of the new key. Increments by 1 with each rotation (e.g., `1 → 2 → 3`).
+</ResponseField>
+
+<ResponseField name="active" type="boolean" required>
+  Whether the key is active for encryption. The newly rotated key will always be `true`. The previous key is set to `false`.
+</ResponseField>
+
+## Example
+
+```bash Rotate an encryption key
+KEY_ID="550e8400-e29b-41d4-a716-446655440000"
+
+curl -X POST http://localhost:8080/v1/security/rotate \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"key_id\": \"${KEY_ID}\"
+  }"
+```
+
+```json Response
+{
+  "key_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "lineage_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "version": 2,
+  "active": true
+}
+```
+
+## Rotation Behavior
+
+Key rotation follows these rules:
+
+1. **New key created**: A fresh key is generated with new random material (32 bytes)
+2. **Version incremented**: The new key's version is `old_version + 1`
+3. **Lineage preserved**: Both keys share the same `lineage_id` for tracking
+4. **Old key deactivated**: The original key's `active` flag is set to `false`
+5. **Old key retained**: The deactivated key remains in storage for decryption
+
+### Active vs Inactive Keys
+
+| Operation | Active Key | Inactive Key |
+|-----------|------------|-------------|
+| Encrypt | ✅ Allowed | ❌ Rejected (400 error) |
+| Decrypt | ✅ Allowed | ✅ Allowed |
+| Rotate | ✅ Allowed | ✅ Allowed (creates new active key) |
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message describing what went wrong
+</ResponseField>
+
+| Status Code | Error Type | Description |
+|-------------|------------|-------------|
+| 200 | - | Rotation successful |
+| 404 | `KeyNotFound` | The specified key_id does not exist |
+| 500 | - | Internal server error (storage backend failure) |
+
+## Example Error
+
+```json 404 Not Found
+{
+  "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+<Warning>
+  After rotation, you must update your application configuration to use the new `key_id` for encryption operations. The old key_id will be rejected for encryption with a `KeyInactive` error.
+</Warning>
+
+## Rotation Strategy
+
+### When to Rotate
+
+Rotate keys regularly based on your security policy:
+
+- **Time-based**: Every 30/60/90 days
+- **Event-based**: After security incidents or personnel changes
+- **Usage-based**: After N encryption operations or data volume thresholds
+- **Compliance**: As required by regulations (PCI DSS, HIPAA, etc.)
+
+### Rotation Workflow
+
+```bash Complete rotation workflow
+# 1. Rotate the key
+NEW_KEY_ID=$(curl -fsS -X POST http://localhost:8080/v1/security/rotate \
+  -H 'Content-Type: application/json' \
+  -d "{\"key_id\":\"${OLD_KEY_ID}\"}" | jq -r '.key_id')
+
+# 2. Update application config with NEW_KEY_ID
+echo "New encryption key: ${NEW_KEY_ID}"
+
+# 3. Old envelopes still decrypt fine
+curl -X POST http://localhost:8080/v1/security/decrypt \
+  -H 'Content-Type: application/json' \
+  -d "{\"input\":\"${OLD_ENVELOPE}\"}"
+
+# 4. New encryptions use the new key
+curl -X POST http://localhost:8080/v1/security/encrypt \
+  -H 'Content-Type: application/json' \
+  -d "{\"key_id\":\"${NEW_KEY_ID}\",\"input\":\"new data\"}"
+```
+
+## Re-encryption Pattern
+
+After rotation, you may want to re-encrypt data encrypted with old keys:
+
+```bash Re-encrypt data with new key
+# Decrypt with old key (embedded in envelope)
+OLD_PLAINTEXT=$(curl -fsS -X POST http://localhost:8080/v1/security/decrypt \
+  -H 'Content-Type: application/json' \
+  -d "{\"input\":\"${OLD_ENVELOPE}\"}" | jq -r '.plaintext')
+
+# Encrypt with new key
+NEW_ENVELOPE=$(curl -fsS -X POST http://localhost:8080/v1/security/encrypt \
+  -H 'Content-Type: application/json' \
+  -d "{\"key_id\":\"${NEW_KEY_ID}\",\"input\":\"${OLD_PLAINTEXT}\"}" | jq -r '.envelope')
+```
+
+## Lineage Tracking
+
+The `lineage_id` field allows you to track all versions of a key family:
+
+- **Initial key**: Creates a new `lineage_id` (UUID v4)
+- **Rotated keys**: Inherit the same `lineage_id`
+- **Version numbers**: Start at 1 and increment with each rotation
+
+Example lineage:
+
+```json
+[
+  {
+    "key_id": "aaa...",
+    "lineage_id": "xxx...",
+    "version": 1,
+    "active": false
+  },
+  {
+    "key_id": "bbb...",
+    "lineage_id": "xxx...",
+    "version": 2,
+    "active": false
+  },
+  {
+    "key_id": "ccc...",
+    "lineage_id": "xxx...",
+    "version": 3,
+    "active": true
+  }
+]
+```
+
+## Production Considerations
+
+- **Automate rotation**: Use cron jobs or schedulers to rotate keys periodically
+- **Monitor inactive keys**: Track how many envelopes still use old keys
+- **Plan re-encryption**: Budget time for re-encrypting data after rotation
+- **Test rollback**: Ensure you can decrypt old data in disaster recovery scenarios
+- **Audit rotation events**: Log all rotation operations for compliance
+
+## Next Steps
+
+- [Encrypt with the new key](/api/security/encrypt) after rotation
+- [Decrypt old envelopes](/api/security/decrypt) using inactive keys
+- Implement automated key rotation schedules
+- Build re-encryption pipelines for data migration

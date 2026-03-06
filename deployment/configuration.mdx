@@ -1,0 +1,328 @@
+---
+title: Configuration
+description: Configure QIMEM Platform with environment variables and runtime settings
+---
+
+## Overview
+
+QIMEM uses environment variables for configuration. All settings are validated at startup and documented in `.env.example`.
+
+## Environment Variables
+
+### Core Configuration
+
+#### QIMEM_MODE
+
+Controls the key storage backend.
+
+```bash
+QIMEM_MODE=stateless
+```
+
+**Options:**
+- `stateless` (default): In-memory key storage
+- `stateful`: PostgreSQL-backed key storage
+
+<Warning>
+**Stateless mode** stores keys in memory only. Keys are lost when the process restarts. Use for development or ephemeral workloads.
+</Warning>
+
+#### QIMEM_BIND
+
+Socket address for the HTTP server.
+
+```bash
+QIMEM_BIND=0.0.0.0:8080
+```
+
+**Default**: `0.0.0.0:8080`
+
+**Format**: `<IP>:<PORT>` (must be a valid `SocketAddr`)
+
+**Examples:**
+```bash
+# Listen on all interfaces
+QIMEM_BIND=0.0.0.0:8080
+
+# Listen on localhost only
+QIMEM_BIND=127.0.0.1:8080
+
+# Custom port
+QIMEM_BIND=0.0.0.0:3000
+```
+
+#### DATABASE_URL
+
+PostgreSQL connection string. **Required** when `QIMEM_MODE=stateful`.
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/qimem
+```
+
+**Format**: `postgres://<user>:<password>@<host>:<port>/<database>[?<options>]`
+
+**Options:**
+- `sslmode=disable` - Disable TLS (development only)
+- `sslmode=require` - Require TLS (production)
+
+<Warning>
+QIMEM will **fail to start** if `QIMEM_MODE=stateful` and `DATABASE_URL` is not set.
+</Warning>
+
+#### RUST_LOG
+
+Controls log verbosity.
+
+```bash
+RUST_LOG=info
+```
+
+**Levels**: `trace`, `debug`, `info`, `warn`, `error`
+
+**Examples:**
+```bash
+# Default logging
+RUST_LOG=info
+
+# Debug mode
+RUST_LOG=debug
+
+# Module-specific logging
+RUST_LOG=qimem=debug,sqlx=warn,hyper=info
+```
+
+## Configuration Struct
+
+Configuration is loaded from environment variables in `src/config.rs:32`:
+
+```rust
+pub struct Config {
+    /// Runtime mode (stateless or stateful)
+    pub mode: Mode,
+    /// Database URL when stateful
+    pub database_url: Option<String>,
+    /// Bind address
+    pub bind: SocketAddr,
+}
+
+impl Config {
+    pub fn from_env() -> Result<Self> {
+        let mode = std::env::var("QIMEM_MODE")
+            .unwrap_or_else(|_| "stateless".to_string());
+        let mode = match mode.as_str() {
+            "stateless" => Mode::Stateless,
+            "stateful" => Mode::Stateful,
+            _ => return Err(QimemError::Config(
+                "QIMEM_MODE must be stateless|stateful".to_string(),
+            )),
+        };
+
+        let bind_raw = std::env::var("QIMEM_BIND")
+            .unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+        let bind = bind_raw.parse::<SocketAddr>()
+            .map_err(|err| QimemError::Config(format!("invalid QIMEM_BIND: {err}")))?
+
+        let database_url = std::env::var("DATABASE_URL").ok();
+        if mode == Mode::Stateful && database_url.is_none() {
+            return Err(QimemError::Config(
+                "DATABASE_URL is required for stateful mode".to_string(),
+            ));
+        }
+        Ok(Self { mode, database_url, bind })
+    }
+}
+```
+
+### Validation Rules
+
+<Steps>
+  <Step title="QIMEM_MODE validation">
+    Must be exactly `stateless` or `stateful` (case-sensitive)
+  </Step>
+
+  <Step title="QIMEM_BIND validation">
+    Must parse as a valid `SocketAddr` (IP:PORT format)
+  </Step>
+
+  <Step title="DATABASE_URL validation">
+    Required when `mode == Mode::Stateful`, optional otherwise
+  </Step>
+</Steps>
+
+## Feature Flags
+
+Compile-time features control optional functionality. Defined in `Cargo.toml:26`:
+
+### stateful
+
+Enables PostgreSQL-backed key storage.
+
+```toml
+[features]
+stateful = ["dep:sqlx"]
+```
+
+**Dependencies:**
+- `sqlx` with `postgres`, `uuid`, `migrate`, `tls-rustls` features
+
+**Build:**
+```bash
+cargo build --release --bin qimem-api --features stateful
+```
+
+**Enables:**
+- `PostgresKeyStore` in `src/keystore/postgres.rs`
+- Database migrations in `migrations/`
+- Persistent key lineage and rotation
+
+### chacha
+
+Enables ChaCha20-Poly1305 encryption algorithm.
+
+```toml
+[features]
+chacha = ["dep:chacha20poly1305"]
+```
+
+**Build:**
+```bash
+cargo build --features chacha
+```
+
+**Enables:**
+- `Algorithm::ChaCha20Poly1305` variant
+- ChaCha20-Poly1305 AEAD cipher
+
+<Note>
+By default, QIMEM uses **AES-256-GCM**. The `chacha` feature is optional and not included in Docker builds.
+</Note>
+
+## Database Connection (Stateful Mode)
+
+### Connection Pooling
+
+When using `stateful` mode with PostgreSQL, QIMEM uses `sqlx` with connection pooling:
+
+```rust
+use sqlx::postgres::PgPoolOptions;
+
+let pool = PgPoolOptions::new()
+    .max_connections(5)
+    .connect(&database_url)
+    .await?;
+```
+
+### TLS Configuration
+
+<CodeGroup>
+```bash Development (no TLS)
+DATABASE_URL=postgres://user:pass@localhost:5432/qimem?sslmode=disable
+```
+
+```bash Production (require TLS)
+DATABASE_URL=postgres://user:pass@db.example.com:5432/qimem?sslmode=require
+```
+
+```bash Self-signed certificate
+DATABASE_URL=postgres://user:pass@db.example.com:5432/qimem?sslmode=verify-ca&sslrootcert=/path/to/ca.crt
+```
+</CodeGroup>
+
+### Migrations
+
+Database migrations are applied automatically at startup:
+
+```rust
+sqlx::migrate!("./migrations")
+    .run(&pool)
+    .await?;
+```
+
+**Migration files** are located in `migrations/` and copied into the Docker image.
+
+## Example Configurations
+
+<CodeGroup>
+```bash Development (Stateless)
+QIMEM_MODE=stateless
+QIMEM_BIND=127.0.0.1:8080
+RUST_LOG=debug
+```
+
+```bash Production (Stateful)
+QIMEM_MODE=stateful
+DATABASE_URL=postgres://qimem:secure_password@db.prod.example.com:5432/qimem?sslmode=require
+QIMEM_BIND=0.0.0.0:8080
+RUST_LOG=info
+```
+
+```bash Docker Compose
+QIMEM_MODE=stateful
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/qimem?sslmode=disable
+QIMEM_BIND=0.0.0.0:8080
+RUST_LOG=info
+```
+
+```bash Kubernetes
+QIMEM_MODE=stateful
+DATABASE_URL=postgres://qimem:${DB_PASSWORD}@postgres-service:5432/qimem?sslmode=require
+QIMEM_BIND=0.0.0.0:8080
+RUST_LOG=warn
+```
+</CodeGroup>
+
+## Configuration Errors
+
+### Invalid QIMEM_MODE
+
+```
+Error: QIMEM_MODE must be stateless|stateful
+```
+
+**Fix:** Set `QIMEM_MODE` to either `stateless` or `stateful`.
+
+### Invalid QIMEM_BIND
+
+```
+Error: invalid QIMEM_BIND: invalid socket address syntax
+```
+
+**Fix:** Ensure `QIMEM_BIND` uses `IP:PORT` format (e.g., `0.0.0.0:8080`).
+
+### Missing DATABASE_URL
+
+```
+Error: DATABASE_URL is required for stateful mode
+```
+
+**Fix:** Set `DATABASE_URL` when using `QIMEM_MODE=stateful`.
+
+## Security Considerations
+
+<Warning>
+- **Never commit** `.env` files with production credentials
+- Use **secret management** (Vault, AWS Secrets Manager) for `DATABASE_URL`
+- Set `sslmode=require` for production database connections
+- Rotate database passwords regularly
+- Use **read-only replicas** for analytics workloads
+</Warning>
+
+## Loading Configuration
+
+QIMEM uses `dotenvy` to load `.env` files:
+
+```rust
+use dotenvy::dotenv;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenv().ok(); // Load .env if present
+    let config = Config::from_env()?;
+    // ...
+}
+```
+
+**Priority** (highest to lowest):
+1. System environment variables
+2. `.env` file in working directory
+3. Default values (if applicable)

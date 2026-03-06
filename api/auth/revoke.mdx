@@ -1,0 +1,116 @@
+---
+title: 'Revoke Token'
+api: 'POST /v1/auth/token/revoke'
+description: 'Revoke an access token to invalidate it immediately'
+---
+
+## Overview
+
+Revoke an access token before its expiration time. Once revoked, the token can no longer be used to authenticate API requests. This is useful for implementing logout functionality or invalidating compromised tokens.
+
+## Request Body
+
+<ParamField body="token" type="string" required>
+  The access token to revoke. Must be a valid access token (not a refresh token).
+</ParamField>
+
+## Response
+
+Returns a confirmation object:
+
+<ResponseField name="revoked" type="boolean">
+  Always `true` when revocation succeeds.
+</ResponseField>
+
+## Example
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/token/revoke \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMzQ1In0.eyJzdWIiOiJiM2Y4YzlkMi0xYTJiLTRjNWQtOGU3Zi05YThiN2M2ZDVlNGYiLCJyZWFsbSI6ImFjbWUiLCJyb2xlcyI6WyJhZG1pbiJdLCJwZXJtaXNzaW9ucyI6WyJ1c2VyczpyZWFkIiwidXNlcnM6d3JpdGUiXSwianRpIjoiYWJjZGVmMTIzNDU2IiwidG9rZW5fdXNlIjoiYWNjZXNzIiwiZXhwIjoxNzQwMDAwOTAwLCJpYXQiOjE3NDAwMDAwMDB9.signature"
+  }'
+```
+
+```json Response
+{
+  "revoked": true
+}
+```
+
+## How Revocation Works
+
+1. The token is validated and decoded to extract the `jti` (JWT ID)
+2. The `jti` is added to an internal revocation list
+3. Future requests with this token will fail authentication
+4. The token remains in the revocation list even after its expiration
+
+## Use Cases
+
+### User Logout
+
+```javascript
+const logout = async (accessToken) => {
+  await fetch('/v1/auth/token/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: accessToken })
+  });
+  
+  // Clear local storage
+  localStorage.removeItem('access_token');
+  localStorage.removeItem('refresh_token');
+  
+  // Redirect to login
+  window.location.href = '/login';
+};
+```
+
+### Security Response
+
+```javascript
+const handleSecurityIncident = async (compromisedToken) => {
+  // Immediately revoke compromised token
+  await fetch('/v1/auth/token/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: compromisedToken })
+  });
+  
+  // Force re-authentication
+  notifyUser('Your session has been terminated for security reasons.');
+};
+```
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Human-readable error message when the request fails.
+</ResponseField>
+
+Common errors:
+- **400 Bad Request**: Invalid request format or missing token
+- **401 Unauthorized**: Invalid token or token validation failed
+  - `"invalid token"` - Token signature invalid or token malformed
+  - `"unexpected token use"` - Provided token is not an access token (e.g., refresh token)
+- **500 Internal Server Error**: Revocation failed due to internal error
+
+## Important Notes
+
+<Warning>
+  This endpoint only revokes **access tokens**. Refresh tokens cannot be revoked using this endpoint. To fully logout a user, revoke the access token and delete the refresh token from storage.
+</Warning>
+
+- Revoked tokens are tracked by their `jti` (JWT ID)
+- Revocation is immediate and cannot be undone
+- The revocation list is stored in-memory and cleared on service restart
+- For production use, consider implementing persistent revocation storage
+- Revoking a token does not revoke other tokens issued to the same user
+
+## Best Practices
+
+1. **Always revoke on logout**: Call this endpoint before clearing client-side tokens
+2. **Delete refresh tokens**: Remove refresh tokens from storage after revoking access tokens
+3. **Handle errors gracefully**: If revocation fails, still clear local tokens to prevent reuse
+4. **Consider token lifetime**: Short-lived tokens (15 minutes) reduce the need for explicit revocation
+5. **Monitor revocation list**: Track revocation patterns to detect potential security issues

@@ -1,0 +1,118 @@
+---
+title: 'Create User'
+api: 'POST /v1/auth/users'
+description: 'Register a new user with password and role assignments'
+---
+
+## Overview
+
+Create a new user within a realm with a username, password, and assigned roles. Passwords are securely hashed using Argon2. Optionally enable multi-factor authentication (MFA) by providing a TOTP secret.
+
+## Request Body
+
+<ParamField body="realm_id" type="string" required>
+  The realm identifier where this user will be created.
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  Unique username within the realm. Used for login authentication.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  User password. Will be hashed using Argon2 before storage.
+</ParamField>
+
+<ParamField body="roles" type="array" required>
+  Array of role names to assign to this user. Roles must exist in the realm before assignment.
+</ParamField>
+
+<ParamField body="totp_secret" type="string" optional>
+  Base32-encoded TOTP secret for multi-factor authentication. If provided, the user must supply a valid TOTP code during login.
+</ParamField>
+
+## Response
+
+Returns the created user object (without password hash):
+
+<ResponseField name="id" type="string">
+  Auto-generated UUID for the user.
+</ResponseField>
+
+<ResponseField name="username" type="string">
+  The user's username.
+</ResponseField>
+
+<ResponseField name="realm_id" type="string">
+  The realm this user belongs to.
+</ResponseField>
+
+## Example
+
+### Basic User Creation
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/users \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "realm_id": "acme",
+    "username": "alice",
+    "password": "secure-password-123",
+    "roles": ["admin", "developer"]
+  }'
+```
+
+```json Response
+{
+  "id": "b3f8c9d2-1a2b-4c5d-8e7f-9a8b7c6d5e4f",
+  "username": "alice",
+  "realm_id": "acme"
+}
+```
+
+### User with MFA Enabled
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/users \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "realm_id": "acme",
+    "username": "bob",
+    "password": "secure-password-456",
+    "roles": ["user"],
+    "totp_secret": "JBSWY3DPEHPK3PXP"
+  }'
+```
+
+```json Response
+{
+  "id": "c4e9d1a3-2b3c-5d6e-9f8a-0b9c8d7e6f5a",
+  "username": "bob",
+  "realm_id": "acme"
+}
+```
+
+## Multi-Factor Authentication
+
+When a `totp_secret` is provided:
+- The user **must** provide a valid TOTP code during login
+- TOTP uses SHA1 algorithm with 6-digit codes and 30-second time steps
+- Generate TOTP secrets using libraries like `pyotp` (Python) or `otpauth` (JavaScript)
+- Users can scan QR codes generated from the TOTP URI format
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Human-readable error message when the request fails.
+</ResponseField>
+
+Common errors:
+- **400 Bad Request**: Invalid request format, missing required fields, or invalid role names
+- **404 Not Found**: Realm does not exist
+- **500 Internal Server Error**: User creation failed due to internal error (e.g., password hashing failure)
+
+## Security Notes
+
+- Passwords are hashed using Argon2 with random salts
+- Password hashes are never exposed in API responses
+- Role names must match existing roles in the realm
+- Username is unique per realm (different realms can have the same username)

@@ -1,0 +1,108 @@
+---
+title: 'Encrypt Data'
+api: 'POST /v1/security/encrypt'
+---
+
+Encrypts plaintext data using the specified encryption key and returns a base64-encoded envelope containing the ciphertext and metadata.
+
+## Request
+
+<ParamField body="key_id" type="string (uuid)" required>
+  The unique identifier of the encryption key to use. Key must be active.
+</ParamField>
+
+<ParamField body="input" type="string" required>
+  The plaintext string to encrypt. Will be converted to UTF-8 bytes before encryption.
+</ParamField>
+
+## Response
+
+<ResponseField name="envelope" type="string">
+  Base64-encoded binary envelope containing the encrypted data and metadata. This envelope is self-describing and includes:
+  - Version (u8): Envelope format version (currently `1`)
+  - Algorithm (u8): Encryption algorithm identifier
+  - Key ID (Uuid): Reference to the encryption key
+  - Nonce (bytes): Random nonce for AES-256-GCM
+  - Ciphertext (bytes): Encrypted payload
+  - Tag (bytes): Authentication tag for integrity verification
+</ResponseField>
+
+## Example
+
+```bash Encrypt sensitive data
+KEY_ID="550e8400-e29b-41d4-a716-446655440000"
+
+curl -X POST http://localhost:8080/v1/security/encrypt \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"key_id\": \"${KEY_ID}\",
+    \"input\": \"hello world\"
+  }"
+```
+
+```json Response
+{
+  "envelope": "AQEgVQ6EAOKbQdSnFkRmVUQAAAwAAABhYmNkZWZnaGlqa2wQAAAA8j+9X..."
+}
+```
+
+## Envelope Format
+
+The envelope is a deterministic binary format that can be safely stored or transmitted. It includes all information needed for decryption:
+
+1. **Version byte**: Format compatibility (must be `1`)
+2. **Algorithm byte**: Crypto algorithm used
+3. **Key ID**: 16 bytes (UUID)
+4. **Nonce length + nonce**: Variable length (12 bytes for AES-256-GCM)
+5. **Ciphertext length + ciphertext**: Variable length
+6. **Tag length + tag**: Variable length (16 bytes for AES-256-GCM)
+
+The envelope is then base64-encoded for safe transport in JSON.
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message describing what went wrong
+</ResponseField>
+
+| Status Code | Error Type | Description |
+|-------------|------------|-------------|
+| 200 | - | Encryption successful |
+| 404 | `KeyNotFound` | The specified key_id does not exist |
+| 400 | `KeyInactive` | The key exists but is inactive (use active key or rotate) |
+| 400 | `Serialization` | Failed to serialize the envelope |
+| 500 | `Encryption` | Cryptographic operation failed |
+
+## Example Error
+
+```json 404 Not Found
+{
+  "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+```json 400 Bad Request
+{
+  "error": "key is inactive: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+<Warning>
+  Only active keys can be used for encryption. If you receive a `KeyInactive` error, you must rotate the key or use a different active key. This design ensures that rotated keys cannot be used for new encryption operations.
+</Warning>
+
+## Algorithm Details
+
+The platform uses **AES-256-GCM** as the default encryption algorithm:
+
+- **Mode**: Galois/Counter Mode (AEAD)
+- **Key size**: 256 bits (32 bytes)
+- **Nonce size**: 96 bits (12 bytes)
+- **Tag size**: 128 bits (16 bytes)
+- **Properties**: Authenticated encryption with associated data
+
+## Next Steps
+
+- [Decrypt the envelope](/api/security/decrypt) to retrieve the original plaintext
+- Store the envelope in your database or configuration
+- [Rotate the key](/api/security/rotate) for ongoing security maintenance

@@ -1,0 +1,82 @@
+---
+title: 'Create Role'
+api: 'POST /v1/auth/roles'
+description: 'Create a new role with permissions in a specific realm'
+---
+
+## Overview
+
+Roles define collections of permissions that can be assigned to users. Each role belongs to a specific realm and contains a list of permission strings. Users inherit all permissions from their assigned roles.
+
+## Request Body
+
+<ParamField body="realm_id" type="string" required>
+  The realm identifier where this role will be created.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Unique role name within the realm.
+</ParamField>
+
+<ParamField body="permissions" type="array" required>
+  Array of permission strings attached to this role. Permissions are arbitrary strings that define what actions this role can perform.
+</ParamField>
+
+## Response
+
+Returns the created role object:
+
+<ResponseField name="name" type="string">
+  The role name.
+</ResponseField>
+
+<ResponseField name="permissions" type="array">
+  Array of permission strings attached to the role.
+</ResponseField>
+
+## Example
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/roles \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "realm_id": "acme",
+    "name": "admin",
+    "permissions": [
+      "users:read",
+      "users:write",
+      "users:delete",
+      "reports:read"
+    ]
+  }'
+```
+
+```json Response
+{
+  "name": "admin",
+  "permissions": [
+    "users:read",
+    "users:write",
+    "users:delete",
+    "reports:read"
+  ]
+}
+```
+
+## Permission Design
+
+Permissions are free-form strings. Common patterns include:
+- Resource-action format: `resource:action` (e.g., `users:read`, `reports:write`)
+- Hierarchical: `service.resource.action` (e.g., `api.users.delete`)
+- Wildcard: `users:*` or `*:read`
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Human-readable error message when the request fails.
+</ResponseField>
+
+Common errors:
+- **400 Bad Request**: Invalid request format or missing required fields
+- **404 Not Found**: Realm does not exist
+- **500 Internal Server Error**: Role creation failed due to internal error

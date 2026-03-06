@@ -1,0 +1,110 @@
+---
+title: 'Introduction'
+description: 'Welcome to the QIMEM Platform - unified security with deterministic encryption and identity management'
+---
+
+## What is QIMEM?
+
+QIMEM is a unified security platform that delivers **deterministic encryption** with comprehensive key lifecycle management and a built-in **QAuth identity service**. It provides enterprise-grade security features including JWT issuance, RBAC (Role-Based Access Control), MFA (TOTP), token refresh/revocation, and extensible plugin registration APIs.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Deterministic Encryption" icon="lock">
+    AES-256-GCM encryption with envelope format for secure data protection and tamper detection
+  </Card>
+  <Card title="Key Lifecycle Management" icon="key">
+    Complete key generation, rotation, and storage with automatic compatibility for decryption
+  </Card>
+  <Card title="QAuth Identity Service" icon="shield-halved">
+    Full-featured authentication with JWT tokens, RBAC, multi-tenancy via realms, and MFA support
+  </Card>
+  <Card title="Production-Ready" icon="server">
+    Memory-safe Rust implementation with zeroized key material, no unsafe code, and comprehensive docs
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+The QIMEM Platform consists of three main components:
+
+### Core Library (`qimem`)
+
+The foundation of the platform, providing:
+- **Crypto engine**: Deterministic encryption/decryption with AES-256-GCM
+- **Envelope format**: Version 1 binary and JSON serialization with integrity validation
+- **Key store traits**: Abstract interface for key management
+- **In-memory store**: Fast, stateless key storage
+- **Postgres store**: Optional stateful persistence via `stateful` feature flag
+
+### QIMEM API Binary (`qimem-api`)
+
+Axum-based HTTP API exposing encryption operations:
+- `POST /keys` - Generate encryption keys
+- `POST /encrypt` - Encrypt data with envelope format
+- `POST /decrypt` - Decrypt envelope payloads
+- `POST /rotate` - Rotate keys while maintaining decrypt compatibility
+- `GET /health` - Health check endpoint
+
+### QAuth API Binary (`qauth-api`)
+
+Unified platform server providing versioned APIs:
+- **`/v1/security/*`** - Key lifecycle and encryption operations
+- **`/v1/auth/*`** - Realm, user, role, and token management
+- **`/v1/plugins/*`** - Plugin registration and discovery
+
+<Note>
+The QAuth API binary includes all QIMEM security features plus the complete identity service, making it the recommended option for production deployments.
+</Note>
+
+## Security Guarantees
+
+<AccordionGroup>
+  <Accordion title="Memory Safety">
+    - Key material wrapped with `zeroize::Zeroizing` for automatic secure cleanup
+    - No key bytes logged anywhere in the system
+    - `#![deny(unsafe_code)]` enforced at compile time
+  </Accordion>
+  <Accordion title="Envelope Integrity">
+    - Version validation prevents format confusion attacks
+    - Algorithm verification ensures only known ciphers are used
+    - Tampered payloads fail with structured decryption errors
+  </Accordion>
+  <Accordion title="Key Rotation">
+    - New active keys created without downtime
+    - Old keys remain available for decrypt compatibility
+    - Inactive keys rejected for encryption operations
+  </Accordion>
+</AccordionGroup>
+
+## Deployment Modes
+
+### Stateless Mode (Default)
+
+Keys stored in memory, suitable for:
+- Development and testing
+- Ephemeral environments
+- Workloads where keys are externally managed
+
+### Stateful Mode
+
+Keys persisted to Postgres, ideal for:
+- Production deployments
+- Multi-instance scaling
+- Long-lived key material
+- Audit and compliance requirements
+
+<Warning>
+For production stateful deployments, always use managed Postgres with encrypted disks and proper backup strategies.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get QIMEM running in minutes with Docker and try encryption and authentication
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed setup instructions for Docker, cargo, and production environments
+  </Card>
+</CardGroup>

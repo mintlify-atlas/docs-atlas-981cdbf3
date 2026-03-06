@@ -1,0 +1,205 @@
+---
+title: 'Introspect Token'
+api: 'POST /v1/auth/token/introspect'
+description: 'Validate an access token and retrieve its claims'
+---
+
+## Overview
+
+Introspect an access token to validate it and retrieve its claims. This endpoint is useful for resource servers that need to verify tokens and extract user information without decoding JWTs directly. It checks token validity, expiration, and revocation status.
+
+## Request Body
+
+<ParamField body="token" type="string" required>
+  The access token to introspect. Must be a valid access token (not a refresh token).
+</ParamField>
+
+## Response
+
+Returns the token claims if valid:
+
+<ResponseField name="active" type="boolean">
+  Always `true` when the token is valid and not revoked.
+</ResponseField>
+
+<ResponseField name="sub" type="string">
+  Subject - The user ID (UUID) this token belongs to.
+</ResponseField>
+
+<ResponseField name="realm" type="string">
+  The realm ID where the user exists.
+</ResponseField>
+
+<ResponseField name="roles" type="array">
+  Array of role names assigned to the user.
+</ResponseField>
+
+<ResponseField name="permissions" type="array">
+  Array of all permissions inherited from the user's roles.
+</ResponseField>
+
+<ResponseField name="exp" type="integer">
+  Expiration timestamp (Unix epoch seconds).
+</ResponseField>
+
+<ResponseField name="iat" type="integer">
+  Issued at timestamp (Unix epoch seconds).
+</ResponseField>
+
+<ResponseField name="jti" type="string">
+  JWT ID - Unique identifier for this token.
+</ResponseField>
+
+## Example
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/token/introspect \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMzQ1In0.eyJzdWIiOiJiM2Y4YzlkMi0xYTJiLTRjNWQtOGU3Zi05YThiN2M2ZDVlNGYiLCJyZWFsbSI6ImFjbWUiLCJyb2xlcyI6WyJhZG1pbiJdLCJwZXJtaXNzaW9ucyI6WyJ1c2VyczpyZWFkIiwidXNlcnM6d3JpdGUiXSwianRpIjoiYWJjZGVmMTIzNDU2IiwidG9rZW5fdXNlIjoiYWNjZXNzIiwiZXhwIjoxNzQwMDAwOTAwLCJpYXQiOjE3NDAwMDAwMDB9.signature"
+  }'
+```
+
+```json Response
+{
+  "active": true,
+  "sub": "b3f8c9d2-1a2b-4c5d-8e7f-9a8b7c6d5e4f",
+  "realm": "acme",
+  "roles": ["admin", "developer"],
+  "permissions": [
+    "users:read",
+    "users:write",
+    "users:delete",
+    "reports:read"
+  ],
+  "exp": 1740000900,
+  "iat": 1740000000,
+  "jti": "abcdef123456"
+}
+```
+
+## Use Cases
+
+### Authorization Middleware
+
+```javascript
+const authMiddleware = async (req, res, next) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+  
+  try {
+    const response = await fetch('/v1/auth/token/introspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    
+    const claims = await response.json();
+    
+    // Attach claims to request
+    req.user = {
+      id: claims.sub,
+      realm: claims.realm,
+      roles: claims.roles,
+      permissions: claims.permissions
+    };
+    
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
+```
+
+### Permission-Based Access Control
+
+```javascript
+const requirePermission = (permission) => {
+  return async (req, res, next) => {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    const response = await fetch('/v1/auth/token/introspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    
+    const claims = await response.json();
+    
+    if (!claims.permissions.includes(permission)) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+    
+    next();
+  };
+};
+
+// Usage
+app.get('/api/users', requirePermission('users:read'), getUsersHandler);
+```
+
+### Token Validation
+
+```python
+import requests
+from datetime import datetime
+
+def validate_token(token: str) -> dict:
+    response = requests.post(
+        'http://localhost:8080/v1/auth/token/introspect',
+        json={'token': token}
+    )
+    
+    if response.status_code != 200:
+        raise ValueError('Invalid token')
+    
+    claims = response.json()
+    
+    # Check expiration
+    if claims['exp'] < datetime.now().timestamp():
+        raise ValueError('Token expired')
+    
+    return claims
+```
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Human-readable error message when the request fails.
+</ResponseField>
+
+Common errors:
+- **400 Bad Request**: Invalid request format or missing token
+- **401 Unauthorized**: Invalid or expired token
+  - `"invalid token"` - Token signature invalid, malformed, or expired
+  - `"unexpected token use"` - Provided token is not an access token (e.g., refresh token)
+  - `"token revoked"` - Token was explicitly revoked via [revoke endpoint](/api/auth/revoke)
+- **500 Internal Server Error**: Introspection failed due to internal error
+
+## Validation Checks
+
+The introspection endpoint performs these validations:
+
+1. **Signature verification**: Token must be signed with a valid signing key
+2. **Token type**: Must be an access token (not refresh token)
+3. **Expiration**: Token must not be expired
+4. **Revocation**: Token must not be in the revocation list
+5. **Claims structure**: All required claims must be present
+
+## Performance Considerations
+
+- Introspection requires database/cache lookups for revocation checks
+- For high-throughput APIs, consider caching introspection results with short TTLs
+- Alternatively, verify JWT signatures locally and only introspect for revocation checks
+- Access tokens are short-lived (15 minutes) to minimize revocation checking overhead
+
+## Best Practices
+
+1. **Use for authorization**: Extract permissions from introspection results for fine-grained access control
+2. **Cache wisely**: Cache results briefly (e.g., 1 minute) to reduce load, but not too long to miss revocations
+3. **Handle expiration**: Check the `exp` claim and refresh tokens proactively
+4. **Validate realm**: Ensure the token's realm matches expected realm for multi-tenant applications
+5. **Local JWT verification**: For better performance, decode and verify JWT locally, only calling introspect when necessary

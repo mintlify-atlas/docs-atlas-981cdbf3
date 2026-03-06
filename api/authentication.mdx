@@ -1,0 +1,224 @@
+---
+title: 'Authentication'
+description: 'How to authenticate API requests with QAuth'
+---
+
+## Overview
+
+The QIMEM Platform API uses **Bearer token authentication** with JWT (JSON Web Tokens) issued by the integrated QAuth service. Most API endpoints require a valid access token in the `Authorization` header.
+
+## Authentication Flow
+
+QIMEM implements the **OAuth 2.0 Client Credentials Flow** and **Resource Owner Password Credentials Flow** for obtaining access tokens.
+
+### 1. Create a Client
+
+First, register an OAuth2 client within a realm:
+
+```bash
+curl -X POST https://api.qimem.io/v1/auth/clients \
+  -H "Content-Type: application/json" \
+  -d '{
+    "realm_id": "my-realm",
+    "redirect_uris": ["https://myapp.com/callback"]
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "client_id": "c1e2f3a4-b5c6-d7e8-f9a0-b1c2d3e4f5a6",
+  "client_secret": "secret_abcd1234efgh5678ijkl",
+  "realm_id": "my-realm",
+  "redirect_uris": ["https://myapp.com/callback"]
+}
+```
+
+<Warning>
+  Store the `client_secret` securely. It will not be shown again.
+</Warning>
+
+### 2. Obtain an Access Token
+
+Use the client credentials and user credentials to login and obtain tokens:
+
+```bash
+curl -X POST https://api.qimem.io/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "c1e2f3a4-b5c6-d7e8-f9a0-b1c2d3e4f5a6",
+    "client_secret": "secret_abcd1234efgh5678ijkl",
+    "realm_id": "my-realm",
+    "username": "alice",
+    "password": "securePassword123"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+<ParamField path="access_token" type="string">
+  JWT access token used to authenticate API requests. Valid for the duration specified in `expires_in`.
+</ParamField>
+
+<ParamField path="refresh_token" type="string">
+  Long-lived token used to obtain a new access token after expiration.
+</ParamField>
+
+<ParamField path="token_type" type="string">
+  Always "Bearer" for JWT tokens.
+</ParamField>
+
+<ParamField path="expires_in" type="integer">
+  Access token lifetime in seconds (typically 3600 = 1 hour).
+</ParamField>
+
+## Using the Access Token
+
+Include the access token in the `Authorization` header of all API requests:
+
+```bash
+curl -X POST https://api.qimem.io/v1/security/encrypt \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "key_id": "550e8400-e29b-41d4-a716-446655440000",
+    "input": "sensitive data"
+  }'
+```
+
+## Token Refresh
+
+When the access token expires, use the refresh token to obtain a new access token without re-authenticating:
+
+```bash
+curl -X POST https://api.qimem.io/v1/auth/token/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+## Token Revocation
+
+Revoke an access or refresh token to immediately invalidate it:
+
+```bash
+curl -X POST https://api.qimem.io/v1/auth/token/revoke \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "revoked": true
+}
+```
+
+## Token Introspection
+
+Verify token validity and inspect claims:
+
+```bash
+curl -X POST https://api.qimem.io/v1/auth/token/introspect \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "active": true,
+  "sub": "alice",
+  "realm_id": "my-realm",
+  "client_id": "c1e2f3a4-b5c6-d7e8-f9a0-b1c2d3e4f5a6",
+  "exp": 1709654400,
+  "iat": 1709650800,
+  "roles": ["user", "admin"]
+}
+```
+
+## Multi-Factor Authentication (MFA)
+
+If a user has TOTP (Time-based One-Time Password) enabled, include the `totp_code` parameter when logging in:
+
+```bash
+curl -X POST https://api.qimem.io/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "c1e2f3a4-b5c6-d7e8-f9a0-b1c2d3e4f5a6",
+    "client_secret": "secret_abcd1234efgh5678ijkl",
+    "realm_id": "my-realm",
+    "username": "alice",
+    "password": "securePassword123",
+    "totp_code": "123456"
+  }'
+```
+
+## JWT Signing Key Rotation
+
+For enhanced security, rotate the JWT signing key periodically:
+
+```bash
+curl -X POST https://api.qimem.io/v1/auth/keys/rotate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+**Response:**
+
+```json
+{
+  "kid": "2024-03-06-abcd1234"
+}
+```
+
+<Info>
+  Previously issued tokens remain valid until expiration. New tokens will be signed with the new key.
+</Info>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Secure Storage" icon="lock">
+    Store client secrets and tokens securely using environment variables or secret management systems.
+  </Card>
+  <Card title="Token Expiration" icon="clock">
+    Implement automatic token refresh logic before expiration to avoid service interruptions.
+  </Card>
+  <Card title="HTTPS Only" icon="shield">
+    Always use HTTPS in production to prevent token interception.
+  </Card>
+  <Card title="Token Revocation" icon="ban">
+    Revoke tokens immediately on logout or when compromise is suspected.
+  </Card>
+</CardGroup>

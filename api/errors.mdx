@@ -1,0 +1,319 @@
+---
+title: 'Error Handling'
+description: 'Understanding QIMEM Platform API error responses'
+---
+
+## Error Response Format
+
+When an API request fails, the QIMEM Platform returns a structured error response with an appropriate HTTP status code.
+
+### Standard Error Response
+
+```json
+{
+  "error": "detailed error message"
+}
+```
+
+<ParamField path="error" type="string">
+  Human-readable error message describing what went wrong.
+</ParamField>
+
+## HTTP Status Codes
+
+The API uses standard HTTP status codes to indicate the success or failure of requests:
+
+| Status Code | Meaning | When Used |
+|-------------|---------|----------|
+| `200 OK` | Success | Request completed successfully |
+| `400 Bad Request` | Client Error | Invalid input, validation failure, or unsupported operation |
+| `404 Not Found` | Resource Not Found | Requested key or resource does not exist |
+| `500 Internal Server Error` | Server Error | Unexpected server-side error |
+
+## Error Types
+
+The platform defines several error types based on the `QimemError` enum:
+
+### Key Errors
+
+#### KeyNotFound
+
+**HTTP Status:** `404 Not Found`
+
+Returned when a requested encryption key cannot be found in the key store.
+
+```json
+{
+  "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Common causes:**
+- Invalid or non-existent `key_id`
+- Key was deleted or never created
+- Wrong key store or database connection
+
+#### KeyInactive
+
+**HTTP Status:** `400 Bad Request`
+
+Returned when attempting to use an inactive (rotated or disabled) key for encryption.
+
+```json
+{
+  "error": "key is inactive: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Resolution:**
+- Use the active key in the lineage
+- Rotate to create a new active key version
+
+### Envelope Errors
+
+#### UnsupportedVersion
+
+**HTTP Status:** `400 Bad Request`
+
+Returned when the envelope version is not supported by the platform.
+
+```json
+{
+  "error": "unsupported envelope version: 2"
+}
+```
+
+**Common causes:**
+- Corrupted envelope data
+- Envelope created by incompatible QIMEM version
+- Manual envelope modification
+
+#### UnsupportedAlgorithm
+
+**HTTP Status:** `400 Bad Request`
+
+Returned when the encryption algorithm specified in the envelope is not recognized.
+
+```json
+{
+  "error": "unsupported algorithm id: 99"
+}
+```
+
+**Supported algorithms:**
+- `0` - AES-256-GCM (default)
+
+#### InvalidEnvelope
+
+**HTTP Status:** `400 Bad Request`
+
+Returned when the envelope structure is malformed or cannot be parsed.
+
+```json
+{
+  "error": "invalid envelope: invalid base64"
+}
+```
+
+**Common causes:**
+- Malformed base64 encoding
+- Truncated or corrupted envelope data
+- Invalid binary format
+
+### Cryptographic Errors
+
+#### Encryption
+
+**HTTP Status:** `500 Internal Server Error`
+
+Returned when encryption operation fails.
+
+```json
+{
+  "error": "encryption failed"
+}
+```
+
+**Common causes:**
+- Invalid key material
+- Cryptographic library error
+- System resource exhaustion
+
+#### Decryption
+
+**HTTP Status:** `500 Internal Server Error`
+
+Returned when decryption operation fails or produces invalid output.
+
+```json
+{
+  "error": "decryption failed"
+}
+```
+
+**Common causes:**
+- Tampered envelope or ciphertext
+- Authentication tag verification failure
+- Wrong key used for decryption
+- Corrupted encrypted data
+
+### Data Errors
+
+#### Serialization
+
+**HTTP Status:** `400 Bad Request`
+
+Returned when data cannot be serialized or deserialized.
+
+```json
+{
+  "error": "serialization failed: invalid JSON structure"
+}
+```
+
+**Common causes:**
+- Invalid JSON in request body
+- Missing required fields
+- Type mismatch in request parameters
+
+### Configuration Errors
+
+#### Config
+
+**HTTP Status:** `400 Bad Request`
+
+Returned when there is a configuration or internal state error.
+
+```json
+{
+  "error": "configuration failed: plugin lock poisoned"
+}
+```
+
+**Common causes:**
+- Internal concurrency issue
+- Invalid server configuration
+- Resource initialization failure
+
+### Database Errors
+
+#### Database
+
+**HTTP Status:** `500 Internal Server Error`
+
+*(Only available with `stateful` feature enabled)*
+
+Returned when a database operation fails.
+
+```json
+{
+  "error": "database error: connection timeout"
+}
+```
+
+**Common causes:**
+- Database connection failure
+- Query timeout
+- Constraint violation
+- Transaction conflict
+
+## Example Error Scenarios
+
+### Encrypting with Non-Existent Key
+
+**Request:**
+
+```bash
+curl -X POST https://api.qimem.io/v1/security/encrypt \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "key_id": "00000000-0000-0000-0000-000000000000",
+    "input": "secret data"
+  }'
+```
+
+**Response:** `404 Not Found`
+
+```json
+{
+  "error": "key not found: 00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Decrypting Invalid Base64
+
+**Request:**
+
+```bash
+curl -X POST https://api.qimem.io/v1/security/decrypt \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "input": "not-valid-base64!!!"
+  }'
+```
+
+**Response:** `400 Bad Request`
+
+```json
+{
+  "error": "invalid envelope: invalid base64"
+}
+```
+
+### Using Inactive Key for Encryption
+
+**Request:**
+
+```bash
+curl -X POST https://api.qimem.io/v1/security/encrypt \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "key_id": "550e8400-e29b-41d4-a716-446655440000",
+    "input": "secret data"
+  }'
+```
+
+**Response:** `400 Bad Request`
+
+```json
+{
+  "error": "key is inactive: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+## Error Handling Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Check Status Codes" icon="check">
+    Always inspect HTTP status codes before parsing response bodies.
+  </Card>
+  <Card title="Retry Logic" icon="rotate">
+    Implement exponential backoff for `500` errors. Never retry `400` or `404` errors.
+  </Card>
+  <Card title="Log Error Messages" icon="file-lines">
+    Log the full error message for debugging and monitoring.
+  </Card>
+  <Card title="User-Friendly Messages" icon="message">
+    Translate technical errors into user-friendly messages in your application.
+  </Card>
+</CardGroup>
+
+## Debugging Tips
+
+<Steps>
+  <Step title="Verify Authentication">
+    Ensure your access token is valid and not expired using `/v1/auth/token/introspect`.
+  </Step>
+  <Step title="Check Request Format">
+    Validate that your JSON request body matches the expected schema.
+  </Step>
+  <Step title="Confirm Resource Exists">
+    For `404` errors, verify the resource ID exists before retrying.
+  </Step>
+  <Step title="Review Envelope Format">
+    For decryption errors, ensure the envelope is properly base64-encoded and not corrupted.
+  </Step>
+</Steps>

@@ -1,0 +1,125 @@
+---
+title: 'Decrypt Data'
+api: 'POST /v1/security/decrypt'
+---
+
+Decrypts a base64-encoded envelope and returns the original plaintext. The envelope is self-describing and contains all metadata needed for decryption, including the key ID.
+
+## Request
+
+<ParamField body="input" type="string" required>
+  Base64-encoded envelope returned from the encrypt endpoint. The envelope contains the encrypted data, key reference, nonce, and authentication tag.
+</ParamField>
+
+## Response
+
+<ResponseField name="plaintext" type="string" required>
+  The original plaintext data as a UTF-8 string. This is the exact input that was provided to the encrypt endpoint.
+</ResponseField>
+
+## Example
+
+```bash Decrypt an envelope
+ENVELOPE="AQEgVQ6EAOKbQdSnFkRmVUQAAAwAAABhYmNkZWZnaGlqa2wQAAAA8j+9X..."
+
+curl -X POST http://localhost:8080/v1/security/decrypt \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"input\": \"${ENVELOPE}\"
+  }"
+```
+
+```json Response
+{
+  "plaintext": "hello world"
+}
+```
+
+## Decryption Process
+
+The decryption operation follows these steps:
+
+1. **Base64 decode** the input string to binary envelope
+2. **Deserialize** the envelope to extract metadata:
+   - Version byte (must be `1`)
+   - Algorithm identifier
+   - Key ID (UUID)
+   - Nonce, ciphertext, and authentication tag
+3. **Retrieve key** from the key store using the embedded key_id
+4. **Verify and decrypt** using AES-256-GCM with authentication tag validation
+5. **Convert** bytes to UTF-8 string
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message describing what went wrong
+</ResponseField>
+
+| Status Code | Error Type | Description |
+|-------------|------------|-------------|
+| 200 | - | Decryption successful |
+| 400 | `InvalidEnvelope` | Input is not valid base64 or envelope format is corrupted |
+| 400 | `UnsupportedVersion` | Envelope version is not supported (must be `1`) |
+| 400 | `UnsupportedAlgorithm` | Algorithm ID in envelope is unknown |
+| 404 | `KeyNotFound` | The key referenced in the envelope no longer exists |
+| 500 | `Decryption` | Authentication tag verification failed (tampered data) |
+| 500 | `Decryption` | Decrypted bytes are not valid UTF-8 |
+
+## Example Errors
+
+```json 400 Bad Request - Invalid Base64
+{
+  "error": "invalid envelope: invalid base64"
+}
+```
+
+```json 400 Bad Request - Unsupported Version
+{
+  "error": "unsupported envelope version: 2"
+}
+```
+
+```json 404 Not Found - Key Missing
+{
+  "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+```json 500 Internal Server Error - Tampered Data
+{
+  "error": "decryption failed"
+}
+```
+
+<Warning>
+  If decryption fails with a `Decryption` error, the envelope may have been tampered with or corrupted. **Never retry decryption with modified envelopes** as this indicates a potential security issue. The AES-GCM authentication tag provides cryptographic integrity verification.
+</Warning>
+
+## Key Rotation Compatibility
+
+Decryption works with **both active and inactive keys**:
+
+- Envelopes encrypted with an old key (before rotation) can still be decrypted
+- The key_id embedded in the envelope is used to locate the correct key material
+- Inactive keys remain in the key store for backward compatibility
+- Only encryption operations require active keys
+
+This design allows you to:
+
+1. Rotate keys regularly for security
+2. Decrypt old data encrypted before rotation
+3. Re-encrypt data with new keys at your own pace
+
+## Security Notes
+
+- **No key reuse**: Each encryption generates a fresh random nonce
+- **Authenticated encryption**: AES-GCM provides both confidentiality and integrity
+- **Constant-time comparison**: Tag verification uses constant-time operations
+- **Zero on drop**: Key material is zeroed in memory using `zeroize::Zeroizing`
+- **No key logging**: Key bytes never appear in logs or error messages
+
+## Next Steps
+
+- [Encrypt new data](/api/security/encrypt) with fresh keys
+- [Rotate keys](/api/security/rotate) regularly for security best practices
+- Implement re-encryption workflows to migrate old envelopes to new keys

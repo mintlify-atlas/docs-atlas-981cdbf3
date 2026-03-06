@@ -1,0 +1,254 @@
+---
+title: 'Plugin Manifests'
+description: 'Register and manage plugin manifests in the QIMEM platform'
+---
+
+## Overview
+
+The QIMEM platform supports an extensible plugin system that allows you to extend platform functionality with custom plugins. Plugins can be written in multiple runtimes (WASM, Python, JavaScript, Lua) and declare their capabilities through a manifest system.
+
+The plugin manifest API provides endpoints to:
+- List all registered plugin manifests
+- Register new plugins with the platform
+
+## Plugin Manifest Structure
+
+<ParamField path="name" type="string" required>
+  Unique plugin name that identifies the plugin in the system
+</ParamField>
+
+<ParamField path="version" type="string" required>
+  Semantic version of the plugin (e.g., "1.0.0", "2.1.3")
+</ParamField>
+
+<ParamField path="runtime" type="string" required>
+  Runtime type that executes the plugin. Supported values include:
+  - `wasm` - WebAssembly runtime
+  - `python` - Python runtime
+  - `js` - JavaScript runtime
+  - `lua` - Lua runtime
+</ParamField>
+
+<ParamField path="capabilities" type="array" required>
+  Array of strings declaring the capabilities exposed by the plugin. Examples include data processing, authentication, storage, etc.
+</ParamField>
+
+---
+
+## List Plugin Manifests
+
+<CodeGroup>
+```bash cURL
+curl -X GET https://api.qimem.com/v1/plugins/manifests \
+  -H "Content-Type: application/json"
+```
+
+```python Python
+import requests
+
+response = requests.get(
+    "https://api.qimem.com/v1/plugins/manifests",
+    headers={"Content-Type": "application/json"}
+)
+
+plugins = response.json()
+print(f"Registered plugins: {len(plugins)}")
+```
+
+```javascript JavaScript
+const response = await fetch('https://api.qimem.com/v1/plugins/manifests', {
+  method: 'GET',
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+const plugins = await response.json();
+console.log(`Registered plugins: ${plugins.length}`);
+```
+</CodeGroup>
+
+### Response
+
+<ResponseField name="plugins" type="array">
+  Array of plugin manifest objects
+
+  <ResponseField name="name" type="string">
+    Unique plugin name
+  </ResponseField>
+
+  <ResponseField name="version" type="string">
+    Semantic version
+  </ResponseField>
+
+  <ResponseField name="runtime" type="string">
+    Runtime type (wasm, python, js, lua)
+  </ResponseField>
+
+  <ResponseField name="capabilities" type="array">
+    Array of capability strings
+  </ResponseField>
+</ResponseField>
+
+### Example Response
+
+```json
+[
+  {
+    "name": "data-processor",
+    "version": "1.2.0",
+    "runtime": "wasm",
+    "capabilities": ["transform", "validate", "filter"]
+  },
+  {
+    "name": "auth-extension",
+    "version": "2.0.1",
+    "runtime": "python",
+    "capabilities": ["oauth2", "saml", "ldap"]
+  }
+]
+```
+
+---
+
+## Register Plugin Manifest
+
+Register a new plugin with the QIMEM platform by submitting its manifest.
+
+<Tabs>
+  <Tab title="WASM Plugin">
+    ```bash cURL
+    curl -X POST https://api.qimem.com/v1/plugins/manifests \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "wasm-processor",
+        "version": "1.0.0",
+        "runtime": "wasm",
+        "capabilities": ["compute", "transform", "analyze"]
+      }'
+    ```
+
+    WASM plugins offer high performance and security through sandboxed execution. Ideal for compute-intensive operations.
+  </Tab>
+
+  <Tab title="Python Plugin">
+    ```bash cURL
+    curl -X POST https://api.qimem.com/v1/plugins/manifests \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "ml-inference",
+        "version": "2.1.0",
+        "runtime": "python",
+        "capabilities": ["predict", "train", "evaluate"]
+      }'
+    ```
+
+    Python plugins are excellent for machine learning, data science, and integration with the Python ecosystem.
+  </Tab>
+
+  <Tab title="JavaScript Plugin">
+    ```bash cURL
+    curl -X POST https://api.qimem.com/v1/plugins/manifests \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "ui-extension",
+        "version": "1.5.2",
+        "runtime": "js",
+        "capabilities": ["render", "validate", "format"]
+      }'
+    ```
+
+    JavaScript plugins are perfect for UI extensions, formatting, and rapid prototyping with familiar syntax.
+  </Tab>
+
+  <Tab title="Lua Plugin">
+    ```bash cURL
+    curl -X POST https://api.qimem.com/v1/plugins/manifests \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "config-processor",
+        "version": "0.9.0",
+        "runtime": "lua",
+        "capabilities": ["parse", "validate", "transform"]
+      }'
+    ```
+
+    Lua plugins provide lightweight scripting with minimal overhead, ideal for configuration processing and rules engines.
+  </Tab>
+</Tabs>
+
+### Request Body
+
+<ParamField body="name" type="string" required>
+  Unique identifier for the plugin
+</ParamField>
+
+<ParamField body="version" type="string" required>
+  Semantic version string (e.g., "1.0.0")
+</ParamField>
+
+<ParamField body="runtime" type="string" required>
+  Runtime type: `wasm`, `python`, `js`, or `lua`
+</ParamField>
+
+<ParamField body="capabilities" type="array" required>
+  Array of capability strings the plugin provides
+</ParamField>
+
+### Response
+
+Returns the registered plugin manifest object.
+
+<ResponseField name="name" type="string">
+  The registered plugin name
+</ResponseField>
+
+<ResponseField name="version" type="string">
+  The plugin version
+</ResponseField>
+
+<ResponseField name="runtime" type="string">
+  The plugin runtime type
+</ResponseField>
+
+<ResponseField name="capabilities" type="array">
+  The plugin capabilities
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "name": "wasm-processor",
+  "version": "1.0.0",
+  "runtime": "wasm",
+  "capabilities": ["compute", "transform", "analyze"]
+}
+```
+
+---
+
+## Plugin System Architecture
+
+The QIMEM plugin system allows you to:
+
+1. **Extend Functionality**: Add custom processing logic without modifying core platform code
+2. **Choose Your Runtime**: Select the best runtime for your use case (performance, ecosystem, ease of development)
+3. **Declare Capabilities**: Explicitly define what your plugin can do for discovery and validation
+4. **Version Management**: Track plugin versions and manage compatibility
+
+### Common Capabilities
+
+- **Data Processing**: `transform`, `filter`, `aggregate`, `validate`
+- **Authentication**: `oauth2`, `saml`, `ldap`, `mfa`
+- **Storage**: `read`, `write`, `index`, `search`
+- **Compute**: `analyze`, `predict`, `classify`, `score`
+- **Integration**: `webhook`, `api`, `event`, `stream`
+
+### Best Practices
+
+- Use semantic versioning for your plugins
+- Keep capability names descriptive and consistent
+- Document plugin requirements and dependencies
+- Test plugins in isolation before platform deployment
+- Consider runtime performance characteristics when choosing between WASM, Python, JS, or Lua

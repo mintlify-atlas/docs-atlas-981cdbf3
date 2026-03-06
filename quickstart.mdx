@@ -1,80 +1,259 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quickstart'
+description: 'Get started with QIMEM Platform in under 5 minutes'
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
+Before you begin, ensure you have:
+- Docker and Docker Compose installed
+- `curl` and `jq` for API testing
+- A terminal with bash or zsh
 
-### Step 1: Set up your local environment
+## Launch QIMEM with Docker
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Start the platform">
+    Clone the repository and launch all services:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    git clone <repository-url>
+    cd qimem
+    docker compose up --build
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    This starts:
+    - `postgres` - PostgreSQL database on port 5432
+    - `qimem-api` - Encryption API on port 8080 (stateful mode)
+    - Health checks run automatically
+  </Step>
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+  <Step title="Verify the service is healthy">
+    ```bash
+    curl -fsS http://localhost:8080/health
+    ```
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    Expected response:
+    ```json
+    {"status":"ok"}
+    ```
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Example 1: Encrypt and Decrypt Data
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Create an encryption key">
+    ```bash
+    KEY_ID=$(curl -fsS -X POST http://localhost:8080/keys \
+      -H 'content-type: application/json' \
+      -d '{}' | jq -r '.key_id')
+    echo "Created key: $KEY_ID"
+    ```
+    
+    Response shape:
+    ```json
+    {"key_id":"<uuid>"}
+    ```
+    
+    <Note>
+    Keys are generated with AES-256-GCM by default. The UUID is used to reference the key in subsequent operations.
+    </Note>
+  </Step>
 
-### Step 3: Go live
+  <Step title="Encrypt data">
+    ```bash
+    ENVELOPE=$(curl -fsS -X POST http://localhost:8080/encrypt \
+      -H 'content-type: application/json' \
+      -d "{\"key_id\":\"${KEY_ID}\",\"input\":\"hello\"}" | jq -r '.envelope')
+    echo "Encrypted envelope: $ENVELOPE"
+    ```
+    
+    The `input` field accepts plaintext strings. The response contains a base64-encoded envelope with:
+    - Version identifier
+    - Algorithm metadata
+    - Key ID reference
+    - Nonce (IV)
+    - Ciphertext
+    - Authentication tag
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Decrypt data">
+    ```bash
+    curl -fsS -X POST http://localhost:8080/decrypt \
+      -H 'content-type: application/json' \
+      -d "{\"input\":\"${ENVELOPE}\"}"
+    ```
+    
+    Response:
+    ```json
+    {"plaintext":"hello"}
+    ```
+    
+    <Note>
+    Decryption automatically extracts the key ID from the envelope and retrieves the corresponding key from the store.
+    </Note>
+  </Step>
+</Steps>
 
-## Next steps
+## Example 2: QAuth Identity and JWT Tokens
 
-Now that you have your docs running, explore these key features:
+<Warning>
+For QAuth features, use the `qauth-api` binary instead of `qimem-api`. Update your Docker Compose or run:
+```bash
+cargo run --bin qauth-api
+```
+</Warning>
+
+<Steps>
+  <Step title="Create a realm">
+    Realms provide multi-tenancy isolation:
+    
+    ```bash
+    curl -fsS -X POST http://localhost:8080/v1/auth/realms \
+      -H 'content-type: application/json' \
+      -d '{"id":"acme","name":"Acme Corporation"}'
+    ```
+  </Step>
+
+  <Step title="Create a role with permissions">
+    ```bash
+    curl -fsS -X POST http://localhost:8080/v1/auth/roles \
+      -H 'content-type: application/json' \
+      -d '{
+        "realm_id":"acme",
+        "name":"admin",
+        "permissions":["keys:encrypt","keys:decrypt"]
+      }'
+    ```
+  </Step>
+
+  <Step title="Create a client">
+    Clients represent applications that authenticate users:
+    
+    ```bash
+    CLIENT_RESPONSE=$(curl -fsS -X POST http://localhost:8080/v1/auth/clients \
+      -H 'content-type: application/json' \
+      -d '{"realm_id":"acme","redirect_uris":["http://localhost/callback"]}')
+    
+    CLIENT_ID=$(echo $CLIENT_RESPONSE | jq -r '.client_id')
+    CLIENT_SECRET=$(echo $CLIENT_RESPONSE | jq -r '.client_secret')
+    ```
+    
+    <Note>
+    Save the `client_secret` securely - it's only returned once during creation.
+    </Note>
+  </Step>
+
+  <Step title="Create a user">
+    ```bash
+    curl -fsS -X POST http://localhost:8080/v1/auth/users \
+      -H 'content-type: application/json' \
+      -d '{
+        "realm_id":"acme",
+        "username":"alice",
+        "password":"secret-password",
+        "roles":["admin"]
+      }'
+    ```
+  </Step>
+
+  <Step title="Authenticate and get JWT tokens">
+    ```bash
+    TOKEN_RESPONSE=$(curl -fsS -X POST http://localhost:8080/v1/auth/token \
+      -H 'content-type: application/json' \
+      -d "{
+        \"client_id\":\"${CLIENT_ID}\",
+        \"client_secret\":\"${CLIENT_SECRET}\",
+        \"realm_id\":\"acme\",
+        \"username\":\"alice\",
+        \"password\":\"secret-password\"
+      }")
+    
+    ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | jq -r '.access_token')
+    REFRESH_TOKEN=$(echo $TOKEN_RESPONSE | jq -r '.refresh_token')
+    echo "Access token: $ACCESS_TOKEN"
+    ```
+  </Step>
+
+  <Step title="Introspect the access token">
+    ```bash
+    curl -fsS -X POST http://localhost:8080/v1/auth/token/introspect \
+      -H 'content-type: application/json' \
+      -d "{\"token\":\"${ACCESS_TOKEN}\"}"
+    ```
+    
+    This returns token metadata including user ID, realm, roles, and expiration.
+  </Step>
+
+  <Step title="Refresh the token">
+    ```bash
+    curl -fsS -X POST http://localhost:8080/v1/auth/token/refresh \
+      -H 'content-type: application/json' \
+      -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}"
+    ```
+    
+    Returns a new access token and refresh token pair.
+  </Step>
+
+  <Step title="Revoke the token">
+    ```bash
+    curl -fsS -X POST http://localhost:8080/v1/auth/token/revoke \
+      -H 'content-type: application/json' \
+      -d "{\"token\":\"${ACCESS_TOKEN}\"}"
+    ```
+    
+    Response:
+    ```json
+    {"revoked":true}
+    ```
+    
+    Subsequent introspection requests will fail with a 400 status.
+  </Step>
+</Steps>
+
+## Key Rotation Example
+
+<Steps>
+  <Step title="Encrypt with the original key">
+    ```bash
+    ENVELOPE_V1=$(curl -fsS -X POST http://localhost:8080/encrypt \
+      -H 'content-type: application/json' \
+      -d "{\"key_id\":\"${KEY_ID}\",\"input\":\"sensitive data\"}" | jq -r '.envelope')
+    ```
+  </Step>
+
+  <Step title="Rotate the key">
+    ```bash
+    NEW_KEY=$(curl -fsS -X POST http://localhost:8080/rotate \
+      -H 'content-type: application/json' \
+      -d "{\"key_id\":\"${KEY_ID}\"}")
+    echo "New key created: $NEW_KEY"
+    ```
+    
+    <Note>
+    The original key is marked inactive but remains in the store for decryption.
+    </Note>
+  </Step>
+
+  <Step title="Old envelopes still decrypt">
+    ```bash
+    curl -fsS -X POST http://localhost:8080/decrypt \
+      -H 'content-type: application/json' \
+      -d "{\"input\":\"${ENVELOPE_V1}\"}"
+    ```
+    
+    This succeeds because rotated keys remain available for decrypt operations.
+  </Step>
+</Steps>
+
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation Guide" icon="download" href="/installation">
+    Detailed setup for production environments
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/security/keys">
+    Complete API documentation and request/response schemas
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

@@ -1,0 +1,63 @@
+---
+title: 'Create Key'
+api: 'POST /v1/security/keys'
+---
+
+Creates a new encryption key and returns its unique identifier. The key is generated using secure random material (32 bytes from OS RNG) and is immediately marked as active for encryption operations.
+
+## Request
+
+This endpoint accepts an empty JSON object.
+
+<ParamField body="request" type="object">
+  Empty object `{}`
+</ParamField>
+
+## Response
+
+<ResponseField name="key_id" type="string (uuid)" required>
+  Unique identifier for the newly created key. Use this ID for encryption and rotation operations.
+</ResponseField>
+
+## Example
+
+```bash Create a new encryption key
+curl -X POST http://localhost:8080/v1/security/keys \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+```json Response
+{
+  "key_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message describing what went wrong
+</ResponseField>
+
+| Status Code | Description |
+|-------------|-------------|
+| 200 | Key created successfully |
+| 500 | Internal server error (storage backend failure) |
+
+<Warning>
+  Key material is generated using `OsRng` and wrapped with `zeroize::Zeroizing` to prevent memory leaks. The actual key bytes are never logged or exposed through the API.
+</Warning>
+
+## Key Properties
+
+- **Material**: 32 bytes of cryptographically secure random data
+- **Algorithm**: AES-256-GCM (default)
+- **Status**: Marked as `active: true` on creation
+- **Lineage**: A new lineage ID is created for tracking rotation history
+- **Version**: Initial version is 1
+
+## Next Steps
+
+- Use the returned `key_id` to [encrypt data](/api/security/encrypt)
+- [Rotate the key](/api/security/rotate) when needed for security best practices
+- Store the `key_id` securely in your application configuration

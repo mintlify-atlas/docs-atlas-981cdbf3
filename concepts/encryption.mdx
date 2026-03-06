@@ -1,0 +1,281 @@
+---
+title: Encryption
+description: Cryptographic algorithms and CryptoEngine implementation
+---
+
+## Supported Algorithms
+
+QIMEM provides authenticated encryption with associated data (AEAD) through two algorithms:
+
+### AES-256-GCM (Always Available)
+
+**Source**: src/crypto.rs:18-19
+
+```rust
+pub enum Algorithm {
+    Aes256Gcm,
+    // ...
+}
+```
+
+- **Cipher**: AES with 256-bit keys
+- **Mode**: Galois/Counter Mode (GCM)
+- **Tag Size**: 128 bits (16 bytes)
+- **Nonce**: 96 bits (12 bytes), randomly generated per encryption
+- **Use Case**: Industry-standard AEAD cipher with hardware acceleration on modern CPUs (AES-NI)
+
+<Info>
+  AES-256-GCM is enabled by default and requires no feature flags.
+</Info>
+
+### ChaCha20-Poly1305 (Optional)
+
+**Source**: src/crypto.rs:20-22
+
+```rust
+#[cfg(feature = "chacha")]
+ChaCha20Poly1305,
+```
+
+- **Cipher**: ChaCha20 stream cipher
+- **MAC**: Poly1305 authenticator
+- **Tag Size**: 128 bits (16 bytes)
+- **Nonce**: 96 bits (12 bytes)
+- **Use Case**: Software-optimized AEAD for environments without AES hardware support
+
+Enable with feature flag:
+```toml
+qimem = { version = "0.1", features = ["chacha"] }
+```
+
+## CryptoEngine
+
+**Source**: src/crypto.rs:44-123
+
+The `CryptoEngine` struct provides a unified interface for encryption and decryption operations:
+
+```rust
+pub struct CryptoEngine {
+    algorithm: Algorithm,
+}
+```
+
+### Creating an Engine
+
+```rust
+use qimem::{CryptoEngine, Algorithm};
+
+let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+```
+
+<Note>
+  The algorithm choice is made at engine creation time and enforced during decryption to prevent algorithm confusion attacks.
+</Note>
+
+## Encryption Process
+
+**Source**: src/crypto.rs:56-92
+
+### Step-by-Step Flow
+
+1. **Active Key Check** (src/crypto.rs:58-60)
+   ```rust
+   if !key.active {
+       return Err(QimemError::KeyInactive(key.key_id));
+   }
+   ```
+   Only active keys can encrypt new data.
+
+2. **Nonce Generation** (src/crypto.rs:61-62)
+   ```rust
+   let mut nonce = [0_u8; 12];
+   OsRng.fill_bytes(&mut nonce);
+   ```
+   Uses OS-provided cryptographically secure random number generator.
+
+3. **AEAD Encryption** (src/crypto.rs:64-80)
+   ```rust
+   match self.algorithm {
+       Algorithm::Aes256Gcm => {
+           let cipher = Aes256Gcm::new_from_slice(key.material.as_slice())
+               .map_err(|_| QimemError::Encryption)?;
+           cipher.encrypt(Nonce::from_slice(&nonce), plaintext)
+               .map_err(|_| QimemError::Encryption)?
+       }
+       // ChaCha20-Poly1305 variant...
+   }
+   ```
+
+4. **Tag Separation** (src/crypto.rs:82)
+   ```rust
+   let tag = ciphertext_with_tag.split_off(ciphertext_with_tag.len().saturating_sub(16));
+   ```
+   The 16-byte authentication tag is extracted from the ciphertext.
+
+5. **Envelope Construction** (src/crypto.rs:84-91)
+   ```rust
+   Ok(Envelope {
+       version: 1,
+       algorithm: self.algorithm,
+       key_id: key.key_id,
+       nonce: nonce.to_vec(),
+       ciphertext: ciphertext_with_tag,
+       tag,
+   })
+   ```
+
+### Example
+
+```rust
+use qimem::{CryptoEngine, Algorithm, InMemoryKeyStore, KeyStore};
+
+let store = InMemoryKeyStore::default();
+let metadata = store.create_key()?;
+let key = store.get_key(metadata.key_id)?;
+
+let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+let envelope = engine.encrypt(&key, b"secret data")?;
+```
+
+## Decryption Process
+
+**Source**: src/crypto.rs:94-123
+
+### Step-by-Step Flow
+
+1. **Algorithm Validation** (src/crypto.rs:96-98)
+   ```rust
+   if self.algorithm != envelope.algorithm {
+       return Err(QimemError::InvalidEnvelope("algorithm mismatch"));
+   }
+   ```
+   Ensures the engine is configured for the envelope's algorithm.
+
+2. **Tag Recombination** (src/crypto.rs:99-100)
+   ```rust
+   let mut combined = envelope.ciphertext.clone();
+   combined.extend_from_slice(&envelope.tag);
+   ```
+
+3. **AEAD Decryption** (src/crypto.rs:102-121)
+   ```rust
+   match envelope.algorithm {
+       Algorithm::Aes256Gcm => {
+           let cipher = Aes256Gcm::new_from_slice(key.material.as_slice())
+               .map_err(|_| QimemError::Decryption)?;
+           cipher.decrypt(Nonce::from_slice(&envelope.nonce), combined.as_ref())
+               .map_err(|_| QimemError::Decryption)
+       }
+       // ChaCha20-Poly1305 variant...
+   }
+   ```
+   If the tag verification fails, `QimemError::Decryption` is returned.
+
+<Warning>
+  Decryption failures may indicate tampered ciphertext, incorrect keys, or corrupted envelopes. The underlying AEAD cipher provides no information about which condition occurred to prevent oracle attacks.
+</Warning>
+
+### Example
+
+```rust
+let plaintext = engine.decrypt(&key, &envelope)?;
+assert_eq!(plaintext, b"secret data");
+```
+
+## Key Material Wrapping
+
+**Source**: src/keystore/mod.rs:31-40
+
+All key material is wrapped with `zeroize::Zeroizing` to prevent sensitive data from lingering in memory:
+
+```rust
+use zeroize::Zeroizing;
+
+pub struct KeyMaterial {
+    pub key_id: Uuid,
+    pub material: Zeroizing<Vec<u8>>,
+    pub active: bool,
+}
+```
+
+### Benefits
+
+- **Automatic Zeroing**: Memory is overwritten when the `KeyMaterial` is dropped
+- **Defense Against Cold Boot Attacks**: Reduces exposure window for key material in RAM
+- **Compiler Guarantees**: Cannot be optimized away by compiler
+
+### Key Generation
+
+**Source**: src/keystore/mod.rs:52-56
+
+```rust
+pub(crate) fn generate_key_material() -> Zeroizing<Vec<u8>> {
+    let mut key = vec![0_u8; 32];
+    OsRng.fill_bytes(&mut key);
+    Zeroizing::new(key)
+}
+```
+
+- **Length**: 256 bits (32 bytes) for AES-256 and ChaCha20
+- **Source**: OS-provided CSPRNG via `rand_core::OsRng`
+- **Entropy**: Full 256 bits of cryptographic entropy
+
+## Algorithm Identifiers
+
+**Source**: src/crypto.rs:25-42
+
+Each algorithm is assigned a numeric ID for binary serialization:
+
+```rust
+impl Algorithm {
+    pub(crate) fn id(self) -> u8 {
+        match self {
+            Self::Aes256Gcm => 1,
+            #[cfg(feature = "chacha")]
+            Self::ChaCha20Poly1305 => 2,
+        }
+    }
+
+    pub(crate) fn from_id(id: u8) -> Result<Self> {
+        match id {
+            1 => Ok(Self::Aes256Gcm),
+            #[cfg(feature = "chacha")]
+            2 => Ok(Self::ChaCha20Poly1305),
+            _ => Err(QimemError::UnsupportedAlgorithm(id)),
+        }
+    }
+}
+```
+
+<Info>
+  Unknown algorithm IDs return `QimemError::UnsupportedAlgorithm` to prevent processing of future or unsupported formats.
+</Info>
+
+## Security Considerations
+
+### No Key Reuse
+
+Each encryption generates a fresh random nonce, ensuring nonce uniqueness even for the same plaintext and key.
+
+### Constant-Time Operations
+
+The underlying `aes-gcm` and `chacha20poly1305` crates implement constant-time cryptography to prevent timing side-channels.
+
+### No Unsafe Code
+
+```rust
+#![deny(unsafe_code)]
+```
+
+All cryptographic operations are implemented in safe Rust.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Envelope Format" href="/concepts/envelope-format" icon="envelope">
+    Learn how encrypted data is serialized
+  </Card>
+  <Card title="Key Rotation" href="/concepts/key-rotation" icon="rotate">
+    Understand key lifecycle management
+  </Card>
+</CardGroup>

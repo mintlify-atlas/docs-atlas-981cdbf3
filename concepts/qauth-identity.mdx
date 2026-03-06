@@ -1,0 +1,494 @@
+---
+title: QAuth Identity
+description: Realm-based authentication, RBAC, JWT tokens, and MFA support
+---
+
+## Overview
+
+QAuth is QIMEM's integrated identity and access management system. It provides:
+
+- **Multi-Tenancy**: Realm-based isolation for separate organizations or environments
+- **Role-Based Access Control (RBAC)**: Permissions mapped through roles
+- **JWT Authentication**: Standards-compliant access and refresh tokens
+- **MFA Support**: Time-based one-time passwords (TOTP)
+- **Token Lifecycle**: Issuance, refresh, revocation, and introspection
+
+<Info>
+  QAuth is designed for OAuth 2.0 password grant flows and bearer token authentication.
+</Info>
+
+## Core Entities
+
+**Source**: src/qauth.rs:16-62
+
+### Realms
+
+```rust
+pub struct Realm {
+    pub id: String,
+    pub name: String,
+}
+```
+
+**Purpose**: Tenant or environment boundary (e.g., `production`, `staging`, `customer-acme`)
+
+**Example**:
+```rust
+let realm = qauth.create_realm("prod", "Production Environment")?;
+```
+
+### Users
+
+```rust
+pub struct User {
+    pub id: Uuid,
+    pub realm_id: String,
+    pub username: String,
+    pub password_hash: String,
+    pub roles: Vec<String>,
+    pub totp_secret: Option<String>,
+}
+```
+
+**Authentication**: Passwords are hashed with Argon2 (src/qauth.rs:177-181):
+
+```rust
+let salt = SaltString::generate(&mut OsRng);
+let hash = Argon2::default()
+    .hash_password(password.as_bytes(), &salt)?
+    .to_string();
+```
+
+<Note>
+  Argon2 is a memory-hard hashing algorithm resistant to GPU-based attacks.
+</Note>
+
+### Roles
+
+```rust
+pub struct Role {
+    pub name: String,
+    pub permissions: Vec<String>,
+}
+```
+
+**Scope**: Roles are defined per-realm.
+
+**Example**:
+```rust
+qauth.create_role(
+    "prod",
+    "admin",
+    vec!["keys:create".into(), "keys:rotate".into(), "keys:delete".into()]
+)?;
+
+qauth.create_role(
+    "prod",
+    "operator",
+    vec!["keys:encrypt".into(), "keys:decrypt".into()]
+)?;
+```
+
+### Clients
+
+```rust
+pub struct Client {
+    pub client_id: String,
+    pub client_secret: String,
+    pub realm_id: String,
+    pub redirect_uris: Vec<String>,
+}
+```
+
+**Purpose**: OAuth 2.0 client credentials for machine-to-machine or application authentication.
+
+**Example**:
+```rust
+let client = qauth.create_client(
+    "prod",
+    vec!["https://app.example.com/callback".into()]
+)?;
+println!("client_id: {}", client.client_id);
+println!("client_secret: {}", client.client_secret);
+```
+
+## JWT Token Structure
+
+**Source**: src/qauth.rs:64-74, 341-394
+
+### Claims Payload
+
+```rust
+struct Claims {
+    sub: String,          // User ID
+    realm: String,        // Realm ID
+    roles: Vec<String>,   // Assigned role names
+    permissions: Vec<String>,  // Aggregated permissions from roles
+    jti: String,          // Unique token ID (for revocation)
+    token_use: String,    // "access" or "refresh"
+    exp: usize,           // Expiration timestamp (Unix seconds)
+    iat: usize,           // Issued at timestamp (Unix seconds)
+}
+```
+
+### Token Types
+
+| Type | `token_use` | Lifetime | Purpose |
+|------|-------------|----------|----------|
+| **Access Token** | `"access"` | 900 seconds (15 minutes) | API authorization |
+| **Refresh Token** | `"refresh"` | 86,400 seconds (24 hours) | Token renewal |
+
+<Warning>
+  Access tokens have short lifetimes. Use refresh tokens to obtain new access tokens without re-authenticating.
+</Warning>
+
+### Signing Algorithm
+
+**Source**: src/qauth.rs:381-387
+
+Tokens are signed with HS256 (HMAC-SHA256):
+
+```rust
+let mut header = Header::new(Algorithm::HS256);
+header.kid = Some(key.kid);  // Key ID for rotation
+let encoding = EncodingKey::from_secret(&key.secret);
+let access_token = encode(&header, &access_claims, &encoding)?;
+```
+
+### Signing Key Rotation
+
+**Source**: src/qauth.rs:76-80, 309-321
+
+```rust
+struct SigningKey {
+    kid: String,     // Key identifier
+    secret: Vec<u8>, // HMAC secret
+}
+```
+
+QAuth maintains a list of signing keys:
+
+```rust
+pub fn rotate_signing_key(&self) -> Result<String> {
+    let mut keys = self.signing_keys.write()?;
+    let kid = Uuid::new_v4().to_string();
+    keys.push(SigningKey {
+        kid: kid.clone(),
+        secret: Uuid::new_v4().as_bytes().to_vec(),
+    });
+    Ok(kid)
+}
+```
+
+During validation (src/qauth.rs:396-421), all keys are tried in reverse order (newest first):
+
+```rust
+for key in keys.iter().rev() {
+    let decoding = DecodingKey::from_secret(&key.secret);
+    if let Ok(data) = decode::<Claims>(token, &decoding, &validation) {
+        return Ok(data.claims);
+    }
+}
+```
+
+<Info>
+  Old signing keys remain valid for token verification after rotation, ensuring zero-downtime key updates.
+</Info>
+
+## RBAC Permissions Model
+
+**Source**: src/qauth.rs:323-339
+
+### Permission Aggregation
+
+User permissions are computed by combining all permissions from assigned roles:
+
+```rust
+fn permissions_for_roles(&self, realm_id: &str, role_names: &[String]) -> Result<Vec<String>> {
+    let map = self.roles.read()?;
+    let mut permissions = HashSet::new();
+    if let Some(realm_roles) = map.get(realm_id) {
+        for role in role_names {
+            if let Some(def) = realm_roles.get(role) {
+                for p in &def.permissions {
+                    permissions.insert(p.clone());
+                }
+            }
+        }
+    }
+    Ok(permissions.into_iter().collect())
+}
+```
+
+### Example Scenario
+
+**Setup**:
+```rust
+qauth.create_role("prod", "dev", vec!["keys:encrypt".into(), "keys:decrypt".into()])?;
+qauth.create_role("prod", "admin", vec!["keys:create".into(), "keys:rotate".into()])?;
+
+qauth.create_user("prod", "alice", "password123", vec!["dev".into(), "admin".into()])?;
+```
+
+**Result**: Alice's token includes:
+```json
+{
+  "roles": ["dev", "admin"],
+  "permissions": ["keys:encrypt", "keys:decrypt", "keys:create", "keys:rotate"]
+}
+```
+
+### Permission Format
+
+Convention: `resource:action` (e.g., `keys:create`, `users:read`, `tokens:revoke`)
+
+<Note>
+  QIMEM does not enforce permission format. Applications must implement authorization logic by inspecting the `permissions` claim.
+</Note>
+
+## MFA / TOTP Support
+
+**Source**: src/qauth.rs:198-210, 247-266
+
+### Enabling TOTP
+
+```rust
+pub fn set_totp_secret(&self, realm_id: &str, username: &str, secret: String) -> Result<()>
+```
+
+**Example**:
+```rust
+let totp_secret = "JBSWY3DPEHPK3PXP";  // Base32-encoded secret
+qauth.set_totp_secret("prod", "alice", totp_secret.into())?;
+```
+
+### TOTP Validation During Login
+
+**Source**: src/qauth.rs:247-266
+
+If a user has `totp_secret` set, the `totp_code` parameter becomes required:
+
+```rust
+if let Some(secret) = user.totp_secret.as_deref() {
+    let code = totp_code.ok_or_else(|| QimemError::Config("mfa required".into()))?;
+    let totp = totp_rs::TOTP::new_unchecked(
+        totp_rs::Algorithm::SHA1,
+        6,  // 6-digit code
+        1,  // 1 step skew tolerance
+        30, // 30-second time window
+        secret.as_bytes().to_vec(),
+        Some("QAuth".to_string()),
+        username.to_string(),
+    );
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let valid = totp.check(code, now);
+    if !valid {
+        return Err(QimemError::Config("invalid mfa code".into()));
+    }
+}
+```
+
+**Parameters**:
+- **Algorithm**: SHA1 (standard for TOTP)
+- **Digits**: 6
+- **Period**: 30 seconds
+- **Skew**: ±1 time window (allows clock drift)
+
+<Info>
+  TOTP secrets should be displayed as QR codes using `otpauth://` URIs for easy setup with authenticator apps (Google Authenticator, Authy, etc.).
+</Info>
+
+## Authentication Flows
+
+### Password Grant (Login)
+
+**Source**: src/qauth.rs:212-275
+
+**Endpoint**: `POST /v1/auth/token`
+
+**Request**:
+```json
+{
+  "client_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_secret": "e5f6g7h8-i9j0-k1l2-m3n4-o5p6q7r8s9t0",
+  "realm_id": "prod",
+  "username": "alice",
+  "password": "password123",
+  "totp_code": "123456"  // Optional, required if MFA enabled
+}
+```
+
+**Response**:
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMyJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMyJ9...",
+  "expires_in": 900,
+  "token_type": "Bearer"
+}
+```
+
+**Validation Steps**:
+1. Verify client credentials (client_id + client_secret)
+2. Check client belongs to specified realm
+3. Verify user password with Argon2
+4. If MFA enabled, validate TOTP code
+5. Aggregate permissions from user roles
+6. Issue access and refresh tokens
+
+### Token Refresh
+
+**Source**: src/qauth.rs:277-282
+
+**Endpoint**: `POST /v1/auth/token/refresh`
+
+**Request**:
+```json
+{
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMyJ9..."
+}
+```
+
+**Response**: New `TokenPair` with fresh access token
+
+**Process**:
+1. Validate refresh token signature and expiration
+2. Check token has `token_use: "refresh"`
+3. Verify token is not revoked (JTI check)
+4. Recompute permissions from current roles
+5. Issue new access and refresh tokens
+
+<Warning>
+  Refresh tokens are single-use. The old refresh token is invalidated when a new pair is issued.
+</Warning>
+
+### Token Revocation
+
+**Source**: src/qauth.rs:284-292
+
+**Endpoint**: `POST /v1/auth/token/revoke`
+
+**Request**:
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMyJ9..."
+}
+```
+
+**Implementation**:
+```rust
+pub fn revoke(&self, token: &str) -> Result<()> {
+    let claims = self.validate_token(token, "access")?;
+    self.revoked_jti.write()?.insert(claims.jti);
+    Ok(())
+}
+```
+
+Revoked tokens are tracked by JTI (JWT ID) in an in-memory set.
+
+<Info>
+  Revocation only affects access tokens. To revoke refresh tokens, implement similar logic by checking `token_use` claim.
+</Info>
+
+### Token Introspection
+
+**Source**: src/qauth.rs:294-307
+
+**Endpoint**: `POST /v1/auth/token/introspect`
+
+**Response**:
+```json
+{
+  "active": true,
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
+  "realm": "prod",
+  "roles": ["admin", "developer"],
+  "permissions": ["keys:create", "keys:rotate", "keys:encrypt", "keys:decrypt"],
+  "exp": 1678886400,
+  "iat": 1678885500,
+  "jti": "a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+}
+```
+
+**Use Case**: Resource servers can verify access tokens without local validation.
+
+## HTTP API Endpoints
+
+**Source**: src/platform_api.rs:53-61
+
+| Endpoint | Method | Purpose |
+|----------|--------|----------|
+| `/v1/auth/realms` | POST | Create realm |
+| `/v1/auth/roles` | POST | Create role |
+| `/v1/auth/clients` | POST | Create OAuth client |
+| `/v1/auth/users` | POST | Register user |
+| `/v1/auth/token` | POST | Login (password grant) |
+| `/v1/auth/token/refresh` | POST | Refresh access token |
+| `/v1/auth/token/revoke` | POST | Revoke access token |
+| `/v1/auth/token/introspect` | POST | Validate and inspect token |
+| `/v1/auth/keys/rotate` | POST | Rotate JWT signing key |
+
+### Example: Full Authentication Setup
+
+```bash
+# 1. Create realm
+curl -X POST http://localhost:8080/v1/auth/realms \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"prod","name":"Production"}'
+
+# 2. Create admin role
+curl -X POST http://localhost:8080/v1/auth/roles \
+  -H 'Content-Type: application/json' \
+  -d '{"realm_id":"prod","name":"admin","permissions":["keys:create","keys:rotate"]}'
+
+# 3. Create OAuth client
+CLIENT=$(curl -X POST http://localhost:8080/v1/auth/clients \
+  -H 'Content-Type: application/json' \
+  -d '{"realm_id":"prod","redirect_uris":["https://app.example.com/callback"]}')
+CLIENT_ID=$(echo $CLIENT | jq -r '.client_id')
+CLIENT_SECRET=$(echo $CLIENT | jq -r '.client_secret')
+
+# 4. Register user
+curl -X POST http://localhost:8080/v1/auth/users \
+  -H 'Content-Type: application/json' \
+  -d '{"realm_id":"prod","username":"alice","password":"secret","roles":["admin"]}'
+
+# 5. Login
+curl -X POST http://localhost:8080/v1/auth/token \
+  -H 'Content-Type: application/json' \
+  -d "{\"client_id\":\"$CLIENT_ID\",\"client_secret\":\"$CLIENT_SECRET\",\"realm_id\":\"prod\",\"username\":\"alice\",\"password\":\"secret\"}"
+```
+
+## QAuthService Storage
+
+**Source**: src/qauth.rs:95-104
+
+```rust
+pub struct QAuthService {
+    realms: Arc<RwLock<HashMap<String, Realm>>>,
+    users: Arc<RwLock<HashMap<String, User>>>,
+    clients: Arc<RwLock<HashMap<String, Client>>>,
+    roles: Arc<RwLock<HashMap<String, HashMap<String, Role>>>>,
+    revoked_jti: Arc<RwLock<HashSet<String>>>,
+    signing_keys: Arc<RwLock<Vec<SigningKey>>>,
+}
+```
+
+<Warning>
+  QAuthService uses in-memory storage with `RwLock`. All data is lost on restart. For production, integrate with a persistent database.
+</Warning>
+
+### Thread Safety
+
+All internal maps use `Arc<RwLock<...>>` for concurrent read/write access across async handlers.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" href="/concepts/architecture" icon="sitemap">
+    See how QAuth integrates with the unified platform API
+  </Card>
+  <Card title="API Reference" href="/api/auth/token" icon="code">
+    Explore detailed authentication endpoint documentation
+  </Card>
+</CardGroup>

@@ -1,0 +1,122 @@
+---
+title: 'Refresh Token'
+api: 'POST /v1/auth/token/refresh'
+description: 'Obtain a new access token using a refresh token'
+---
+
+## Overview
+
+Exchange a valid refresh token for a new access and refresh token pair. This allows users to maintain authenticated sessions without re-entering credentials. The old refresh token remains valid until its expiration.
+
+## Request Body
+
+<ParamField body="refresh_token" type="string" required>
+  The refresh token obtained from a previous [login](/api/auth/token) or refresh request.
+</ParamField>
+
+## Response
+
+Returns a new `TokenPair` object:
+
+<ResponseField name="access_token" type="string">
+  New JWT access token for authenticating API requests.
+</ResponseField>
+
+<ResponseField name="refresh_token" type="string">
+  New JWT refresh token with extended expiration.
+</ResponseField>
+
+<ResponseField name="expires_in" type="integer">
+  Number of seconds until the new access token expires (900 seconds = 15 minutes).
+</ResponseField>
+
+<ResponseField name="token_type" type="string">
+  Token type, always "Bearer".
+</ResponseField>
+
+## Token Rotation
+
+Each refresh request issues **new** tokens:
+- New access token with fresh 15-minute expiration
+- New refresh token with fresh 24-hour expiration
+- Previous tokens remain valid until their original expiration
+- User roles and permissions are re-evaluated from current state
+
+## Example
+
+```bash cURL
+curl -X POST http://localhost:8080/v1/auth/token/refresh \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMzQ1In0.eyJzdWIiOiJiM2Y4YzlkMi0xYTJiLTRjNWQtOGU3Zi05YThiN2M2ZDVlNGYiLCJyZWFsbSI6ImFjbWUiLCJyb2xlcyI6WyJhZG1pbiJdLCJwZXJtaXNzaW9ucyI6WyJ1c2VyczpyZWFkIiwidXNlcnM6d3JpdGUiXSwianRpIjoiYWJjZGVmNjc4OTAxIiwidG9rZW5fdXNlIjoicmVmcmVzaCIsImV4cCI6MTc0MDA4NjQwMCwiaWF0IjoxNzQwMDAwMDAwfS5zaWduYXR1cmU"
+  }'
+```
+
+```json Response
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMzQ1In0.eyJzdWIiOiJiM2Y4YzlkMi0xYTJiLTRjNWQtOGU3Zi05YThiN2M2ZDVlNGYiLCJyZWFsbSI6ImFjbWUiLCJyb2xlcyI6WyJhZG1pbiJdLCJwZXJtaXNzaW9ucyI6WyJ1c2VyczpyZWFkIiwidXNlcnM6d3JpdGUiXSwianRpIjoibmV3LWp0aS0xMjM0NSIsInRva2VuX3VzZSI6ImFjY2VzcyIsImV4cCI6MTc0MDAwMTgwMCwiaWF0IjoxNzQwMDAwOTAwfS5zaWduYXR1cmU",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEyMzQ1In0.eyJzdWIiOiJiM2Y4YzlkMi0xYTJiLTRjNWQtOGU3Zi05YThiN2M2ZDVlNGYiLCJyZWFsbSI6ImFjbWUiLCJyb2xlcyI6WyJhZG1pbiJdLCJwZXJtaXNzaW9ucyI6WyJ1c2VyczpyZWFkIiwidXNlcnM6d3JpdGUiXSwianRpIjoibmV3LXJlZnJlc2gtNjc4OTAiLCJ0b2tlbl91c2UiOiJyZWZyZXNoIiwiZXhwIjoxNzQwMDg3MzAwLCJpYXQiOjE3NDAwMDA5MDB9LnNpZ25hdHVyZQ",
+  "expires_in": 900,
+  "token_type": "Bearer"
+}
+```
+
+## Best Practices
+
+### Automatic Refresh
+
+Implement automatic token refresh in your client:
+
+```javascript
+const refreshAccessToken = async () => {
+  const response = await fetch('/v1/auth/token/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: storedRefreshToken })
+  });
+  
+  const { access_token, refresh_token } = await response.json();
+  
+  // Store new tokens
+  localStorage.setItem('access_token', access_token);
+  localStorage.setItem('refresh_token', refresh_token);
+};
+
+// Refresh before expiration (e.g., every 14 minutes)
+setInterval(refreshAccessToken, 14 * 60 * 1000);
+```
+
+### Error Handling
+
+If refresh fails, redirect user to login:
+
+```javascript
+try {
+  await refreshAccessToken();
+} catch (error) {
+  // Refresh token expired or invalid
+  redirectToLogin();
+}
+```
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Human-readable error message when the request fails.
+</ResponseField>
+
+Common errors:
+- **400 Bad Request**: Invalid request format or missing refresh token
+- **401 Unauthorized**: Invalid or expired refresh token
+  - `"invalid token"` - Token signature invalid or token malformed
+  - `"unexpected token use"` - Provided token is not a refresh token (e.g., access token)
+  - `"token revoked"` - Token was explicitly revoked
+- **500 Internal Server Error**: Token issuance failed
+
+## Security Notes
+
+- Refresh tokens are valid for 24 hours from issuance
+- Each refresh creates a new token pair with new `jti` values
+- Refresh tokens can be revoked using the [revoke endpoint](/api/auth/revoke)
+- Refreshing does **not** require MFA verification
+- Store refresh tokens securely (e.g., httpOnly cookies, secure storage)
