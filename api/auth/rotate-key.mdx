@@ -1,0 +1,161 @@
+---
+title: 'Rotate JWT Signing Key'
+description: 'Rotate the JWT signing key used for token issuance'
+---
+
+## Endpoint
+
+```
+POST /v1/auth/keys/rotate
+```
+
+Rotates the JWT signing key used to sign access and refresh tokens. After rotation, new tokens will be signed with the new key while existing tokens signed with old keys remain valid during the grace period.
+
+## Request
+
+This endpoint requires no request body. Send an empty POST request:
+
+```bash
+curl -X POST http://localhost:8080/v1/auth/keys/rotate \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+## Response
+
+<ResponseField name="kid" type="string" required>
+  The key ID (kid) of the newly created signing key
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "kid": "a7f2c8e1-4b3d-4c9a-8f2e-1d5c6b7a9e0f"
+}
+```
+
+## Key Rotation Behavior
+
+When you rotate the JWT signing key:
+
+1. **New key created**: A new signing key with a unique `kid` is generated using cryptographically secure random bytes
+2. **Old keys retained**: Previous signing keys remain available for token verification
+3. **New tokens signed**: All newly issued tokens (via `/v1/auth/token` or `/v1/auth/token/refresh`) will use the new key
+4. **Backward compatibility**: Existing tokens signed with old keys remain valid and can be verified until they expire
+
+### Key Structure
+
+Each signing key consists of:
+- `kid` (Key ID): UUID v4 identifier included in JWT headers
+- `secret`: 16 bytes of cryptographically random data used for HS256 signing
+
+From `src/qauth.rs:76-80`:
+```rust
+#[derive(Debug, Clone)]
+struct SigningKey {
+    kid: String,
+    secret: Vec<u8>,
+}
+```
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Security Rotation" icon="shield">
+    Rotate keys periodically as part of security best practices
+  </Card>
+  <Card title="Key Compromise" icon="triangle-exclamation">
+    Immediately rotate if you suspect a signing key has been compromised
+  </Card>
+  <Card title="Zero-Downtime Updates" icon="circle-check">
+    Rotate keys without invalidating existing user sessions
+  </Card>
+  <Card title="Compliance" icon="file-certificate">
+    Meet regulatory requirements for periodic key rotation
+  </Card>
+</CardGroup>
+
+## Implementation Details
+
+The rotation mechanism from `src/qauth.rs:310-321`:
+
+```rust
+pub fn rotate_signing_key(&self) -> Result<String> {
+    let mut keys = self
+        .signing_keys
+        .write()
+        .map_err(|_| QimemError::Config("signing lock poisoned".into()))?;
+    let kid = Uuid::new_v4().to_string();
+    keys.push(SigningKey {
+        kid: kid.clone(),
+        secret: Uuid::new_v4().as_bytes().to_vec(),
+    });
+    Ok(kid)
+}
+```
+
+The system maintains multiple signing keys in memory and uses the **most recent key** for signing new tokens while keeping older keys available for verification.
+
+## Token Verification
+
+During token validation (`src/qauth.rs:396-421`), the system:
+1. Iterates through all signing keys in reverse order (newest first)
+2. Attempts to decode the JWT with each key
+3. Returns claims if signature verification succeeds
+4. Checks the token's `kid` header to optimize lookups
+
+This ensures that tokens signed with any active key can be verified.
+
+## Best Practices
+
+<Steps>
+  <Step title="Schedule Regular Rotations">
+    Rotate signing keys every 30-90 days as part of your security operations
+  </Step>
+  <Step title="Monitor Token Expiry">
+    After rotation, monitor for tokens approaching expiry. Most tokens expire within 15 minutes (access) or 24 hours (refresh)
+  </Step>
+  <Step title="Document Rotation Events">
+    Log each rotation with timestamp and new `kid` for audit trails
+  </Step>
+  <Step title="Test Before Production">
+    Test rotation in staging to ensure clients handle multiple valid signing keys
+  </Step>
+</Steps>
+
+<Warning>
+**Key Rotation Does Not Revoke Tokens**: This operation creates a new signing key but does not invalidate existing tokens. To revoke specific tokens, use the [token revocation endpoint](/api/auth/revoke).
+</Warning>
+
+## Error Responses
+
+| Status Code | Error | Description |
+|-------------|-------|-------------|
+| `400` | `Config` | Failed to acquire write lock on signing keys |
+| `500` | Internal Error | Unexpected error during key generation |
+
+### Example Error
+
+```json
+{
+  "error": "signing lock poisoned"
+}
+```
+
+## Related Endpoints
+
+<CardGroup cols={2}>
+  <Card title="Issue Tokens" icon="key" href="/api/auth/token">
+    Obtain access and refresh tokens with the current signing key
+  </Card>
+  <Card title="Introspect Tokens" icon="magnifying-glass" href="/api/auth/introspect">
+    Verify token signatures against all active signing keys
+  </Card>
+  <Card title="Revoke Tokens" icon="ban" href="/api/auth/revoke">
+    Explicitly revoke tokens by JTI
+  </Card>
+  <Card title="Refresh Tokens" icon="rotate" href="/api/auth/refresh">
+    Exchange refresh tokens for new access tokens (signed with current key)
+  </Card>
+</CardGroup>

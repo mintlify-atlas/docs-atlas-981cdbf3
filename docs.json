@@ -86,7 +86,8 @@
               "api/auth/token",
               "api/auth/refresh",
               "api/auth/revoke",
-              "api/auth/introspect"
+              "api/auth/introspect",
+              "api/auth/rotate-key"
             ]
           },
           {
