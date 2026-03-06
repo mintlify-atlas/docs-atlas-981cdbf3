@@ -1,0 +1,113 @@
+{
+  "projectType": "api-service",
+  "projectName": "QIMEM Platform",
+  "projectDescription": "Unified security platform delivering deterministic encryption, key lifecycle management, and QAuth identity service with JWT issuance, RBAC, and MFA.",
+  "theme": "aspen",
+  "primaryColor": "#040404",
+  "lightColor": "#7c7c7c",
+  "darkColor": "#bfbfbf",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/encryption",
+              "concepts/envelope-format",
+              "concepts/key-rotation",
+              "concepts/qauth-identity"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/configuration",
+              "deployment/production"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication",
+              "api/errors"
+            ]
+          },
+          {
+            "group": "Security APIs",
+            "pages": [
+              "api/security/keys",
+              "api/security/encrypt",
+              "api/security/decrypt",
+              "api/security/rotate"
+            ]
+          },
+          {
+            "group": "Auth APIs",
+            "pages": [
+              "api/auth/realms",
+              "api/auth/roles",
+              "api/auth/clients",
+              "api/auth/users",
+              "api/auth/token",
+              "api/auth/refresh",
+              "api/auth/revoke",
+              "api/auth/introspect"
+            ]
+          },
+          {
+            "group": "Plugin APIs",
+            "pages": [
+              "api/plugins/manifests"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Deterministic encryption with AES-256-GCM",
+    "Envelope format with binary and JSON serialization",
+    "Key lifecycle management with rotation support",
+    "QAuth identity service with JWT tokens",
+    "RBAC with roles and permissions",
+    "Multi-factor authentication (TOTP)",
+    "Token refresh and revocation",
+    "Plugin manifest registration",
+    "Stateless in-memory and stateful PostgreSQL storage"
+  ],
+  "publicApiSurface": [
+    "POST /v1/security/keys",
+    "POST /v1/security/encrypt",
+    "POST /v1/security/decrypt",
+    "POST /v1/security/rotate",
+    "POST /v1/auth/realms",
+    "POST /v1/auth/roles",
+    "POST /v1/auth/clients",
+    "POST /v1/auth/users",
+    "POST /v1/auth/token",
+    "POST /v1/auth/token/refresh",
+    "POST /v1/auth/token/revoke",
+    "POST /v1/auth/token/introspect",
+    "POST /v1/auth/keys/rotate",
+    "GET /v1/plugins/manifests",
+    "POST /v1/plugins/manifests"
+  ]
+}
